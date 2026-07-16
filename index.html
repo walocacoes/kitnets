@@ -67,7 +67,8 @@ nav button.on{background:var(--green-bg);color:var(--green)}
 #modal-root{position:fixed;inset:0;display:none;z-index:100}
 #modal-root.open{display:block}
 .mBack{position:absolute;inset:0;background:rgba(25,28,22,.45)}
-.mBox{position:absolute;left:50%;bottom:0;transform:translateX(-50%);width:100%;max-width:540px;max-height:88vh;overflow-y:auto;background:var(--card);border-radius:18px 18px 0 0;padding:18px 18px calc(20px + env(safe-area-inset-bottom))}
+.mBox{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:calc(100% - 36px);max-width:460px;max-height:86vh;overflow-y:auto;background:var(--card);border-radius:18px;padding:18px}
+@media(max-width:600px){.mBox{top:auto;bottom:0;transform:translateX(-50%);width:100%;max-width:540px;border-radius:18px 18px 0 0;padding-bottom:calc(20px + env(safe-area-inset-bottom))}}
 .mBox h3{font-size:18px;margin-bottom:4px}
 .mAct{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
 /* lists */
@@ -144,7 +145,7 @@ function renderLogin(){
   app.innerHTML = `<div class="login">
     <div class="disp" style="font-size:44px">🏘️</div>
     <h1>Kitnets</h1>
-    <p class="muted">Gestão de aluguéis · Rua 8 e Coronel Flori</p>
+    <p class="muted">Gestão de aluguéis · Rua 8 e Coronel Fleury</p>
     <button class="btn" id="btnLogin">Entrar com Google</button>
   </div>`;
   $("#btnLogin").onclick = () => signInWithPopup(auth, new GoogleAuthProvider()).catch(e=>alert("Erro no login: "+e.message));
@@ -161,7 +162,7 @@ function iniciar(){
   escuta("unidades", v=>unidades=v.sort((a,b)=>(a.ordem||0)-(b.ordem||0)||a.nome.localeCompare(b.nome,"pt-BR",{numeric:true})));
   escuta("contratos", v=>contratos=v);
   escuta("pagamentos", v=>pagamentos=v);
-  escuta("despesas", v=>despesas=v.sort((a,b)=>b.data.localeCompare(a.data)));
+  escuta("despesas", v=>despesas=v.sort((a,b)=>(b.vencimento||b.data||"").localeCompare(a.vencimento||a.data||"")));
   setTimeout(seedSePreciso, 2500);
 }
 
@@ -169,7 +170,7 @@ async function seedSePreciso(){
   if(!carregado["casas"] || casas.length) return;
   const batch = writeBatch(db);
   const mk = (nome,ordem)=>{ const r=doc(collection(db,"casas")); batch.set(r,{nome,ordem}); return r.id; };
-  const c1=mk("Rua 8 · São João",1), c2=mk("Coronel Flori · Kitnets",2), c3=mk("Coronel Flori · Casa",3);
+  const c1=mk("Rua 8 · São João",1), c2=mk("Coronel Fleury · Kitnets",2), c3=mk("Coronel Fleury · Casa",3);
   for(let i=1;i<=10;i++) batch.set(doc(collection(db,"unidades")),{casaId:c1,nome:`Kitnet ${pad(i)}`,ordem:i});
   for(let i=1;i<=4;i++)  batch.set(doc(collection(db,"unidades")),{casaId:c2,nome:`Kitnet ${pad(i)}`,ordem:i});
   batch.set(doc(collection(db,"unidades")),{casaId:c3,nome:"Casa",ordem:1});
@@ -207,6 +208,14 @@ function statusComp(c, ym){
   return venceu ? "atrasado" : "aberto";
 }
 const stTag = s => ({pago:'<span class="tag t-pago">Pago</span>',parcial:'<span class="tag t-parcial">Parcial</span>',aberto:'<span class="tag t-aberto">Em aberto</span>',atrasado:'<span class="tag t-atrasado">Atrasado</span>'}[s]);
+
+/* despesas: vencimento/pagamento */
+const vencDesp = d => d.vencimento || d.data || hoje();
+const stDesp = d => d.pagamento ? "pago" : (vencDesp(d) < hoje() ? "vencido" : "avencer");
+const stDespTag = s => ({pago:'<span class="tag t-pago">Paga</span>',vencido:'<span class="tag t-atrasado">Vencida</span>',avencer:'<span class="tag t-parcial">A vencer</span>'}[s]);
+const FORMAS = ["Pix","Dinheiro","Boleto","Débito automático","Cartão","Transferência","Outro"];
+const CONTAS_BASE = ["Sicredi","Dinheiro"];
+const contasDisponiveis = () => [...new Set([...CONTAS_BASE, ...despesas.map(d=>d.conta).filter(Boolean)])];
 function compsDo(c){
   const ini = ymDe(c.dataEntrada);
   const fim = c.ativo ? ymAtual() : ymDe(c.dataSaida||c.dataEntrada);
@@ -249,7 +258,9 @@ function renderHome(){
       pend.push({c,u,falta,venceu,dev,pg});
     }
   }
-  const despMes = despesas.filter(d=>ymDe(d.data)===ym).reduce((s,d)=>s+Number(d.valor),0);
+  const despLista = despesas.filter(d=>ymDe(vencDesp(d))===ym);
+  const despMes = despLista.reduce((s,d)=>s+Number(d.valor),0);
+  const despPagas = despLista.filter(d=>d.pagamento).reduce((s,d)=>s+Number(d.valor),0);
   const ocupadas = new Set(ativosNoMes.map(c=>c.unidadeId)).size;
   const totalU = unidades.length;
   const ocup = totalU ? Math.round(100*ocupadas/totalU) : 0;
@@ -271,7 +282,7 @@ function renderHome(){
     <div class="kpi"><div class="l">Aluguéis do mês</div><div class="v">${fmt(aReceber)}</div><div class="muted">previsto</div></div>
     <div class="kpi"><div class="l">Recebido</div><div class="v" style="color:var(--green)">${fmt(recebido)}</div><div class="muted">${aReceber?Math.round(100*recebido/aReceber):0}% do previsto</div></div>
     <div class="kpi"><div class="l">Em atraso</div><div class="v" style="color:${atrasado>0?'var(--red)':'var(--ink)'}">${fmt(atrasado)}</div><div class="muted">venceu e não pagou</div></div>
-    <div class="kpi"><div class="l">Despesas</div><div class="v" style="color:var(--amber)">${fmt(despMes)}</div><div class="muted">água, energia, reparos</div></div>
+    <div class="kpi"><div class="l">Despesas</div><div class="v" style="color:var(--amber)">${fmt(despMes)}</div><div class="muted">pagas ${fmt(despPagas)} · em aberto ${fmt(despMes-despPagas)}</div></div>
     <div class="kpi liq"><div class="l">Resultado do mês (recebido − despesas)</div><div class="v" style="color:${liq>=0?'var(--green)':'var(--red)'}">${fmt(liq)}</div></div>
   </div>
   <div class="card">
@@ -572,46 +583,126 @@ function comprimir(file){
 }
 
 /* ---------- DESPESAS ---------- */
+const TIPO_DESP={agua:"💧 Água",energia:"⚡ Energia",reparo:"🔧 Reparo",outro:"📦 Outro"};
 function renderDespesas(){
   const ym=mesSel;
-  const lista=despesas.filter(d=>ymDe(d.data)===ym);
+  const lista=despesas.filter(d=>ymDe(vencDesp(d))===ym);
   const total=lista.reduce((s,d)=>s+Number(d.valor),0);
+  const pagas=lista.filter(d=>d.pagamento).reduce((s,d)=>s+Number(d.valor),0);
+  const vencidas=lista.filter(d=>stDesp(d)==="vencido").reduce((s,d)=>s+Number(d.valor),0);
   const porCasa={};
   for(const d of lista){ porCasa[d.casaId]=(porCasa[d.casaId]||0)+Number(d.valor); }
-  const TIPO={agua:"💧 Água",energia:"⚡ Energia",reparo:"🔧 Reparo",outro:"📦 Outro"};
   app.innerHTML = `
   <div class="hdr"><div><div class="sub">Água · energia · reparos</div><h1>Despesas</h1></div>
     <button class="btn sm" onclick="novaDespesa()">＋ lançar</button></div>
   <div class="mSel"><button onclick="mudaMes(-1)">‹</button><div class="lbl">${ymLabel(ym)}</div><button onclick="mudaMes(1)">›</button></div>
   <div class="kgrid">
-    <div class="kpi liq"><div class="l">Total do mês</div><div class="v" style="color:var(--amber)">${fmt(total)}</div>
+    <div class="kpi"><div class="l">Total do mês</div><div class="v" style="color:var(--amber)">${fmt(total)}</div>
       <div class="muted">${casas.filter(c=>porCasa[c.id]).map(c=>`${esc(c.nome)}: ${fmt(porCasa[c.id])}`).join(" · ")||"sem lançamentos"}</div></div>
+    <div class="kpi"><div class="l">Situação</div>
+      <div class="v" style="color:var(--green);font-size:17px">✓ ${fmt(pagas)}</div>
+      <div class="muted">em aberto ${fmt(total-pagas)}${vencidas>0.005?` · <b style="color:var(--red)">vencidas ${fmt(vencidas)}</b>`:""}</div></div>
   </div>
   <div class="card">
     ${lista.length ? lista.map(d=>{
       const cs=casas.find(c=>c.id===d.casaId);
+      const st=stDesp(d);
       return `<div class="expRow">
-        <div><b>${TIPO[d.tipo]||d.tipo}</b> · ${esc(d.descricao||"")}
-          <div class="muted">${esc(cs?.nome||"?")} · ${dBr(d.data)}</div></div>
-        <div class="row"><b>${fmt(d.valor)}</b><button class="iconb" onclick="delDesp('${d.id}')">🗑</button></div>
+        <div><b>${TIPO_DESP[d.tipo]||d.tipo}</b>${d.descricao?` · ${esc(d.descricao)}`:""}
+          <div class="muted">${esc(cs?.nome||"?")} · vence ${dBr(vencDesp(d))}</div>
+          ${d.pagamento?`<div class="muted">✓ pago ${dBr(d.pagamento)}${d.formaPag?` · ${esc(d.formaPag)}`:""}${d.conta?` · ${esc(d.conta)}`:""}</div>`:""}
+        </div>
+        <div style="text-align:right">
+          <b>${fmt(d.valor)}</b>
+          <div class="row" style="justify-content:flex-end;margin-top:4px">${stDespTag(st)}
+            ${!d.pagamento?`<button class="btn sm" onclick="pagarDesp('${d.id}')">pagar</button>`:""}
+            <button class="iconb" onclick="editDesp('${d.id}')">✎</button>
+            <button class="iconb" onclick="delDesp('${d.id}')">🗑</button></div>
+        </div>
       </div>`;
-    }).join("") : `<p class="muted" style="padding:8px 0">Nenhuma despesa lançada em ${ymLabel(ym)}.</p>`}
+    }).join("") : `<p class="muted" style="padding:8px 0">Nenhuma despesa com vencimento em ${ymLabel(ym)}.</p>`}
   </div>
   ${nav()}`;
 }
+function selForma(v){ return `<select id="f-forma">${FORMAS.map(f=>`<option ${f===v?"selected":""}>${f}</option>`).join("")}</select>`; }
+function selConta(v){
+  const cts=contasDisponiveis();
+  return `<select id="f-conta" onchange="contaNova(this)">${cts.map(c=>`<option ${c===v?"selected":""}>${esc(c)}</option>`).join("")}<option value="__nova">➕ Nova conta…</option></select>`;
+}
+window.contaNova = sel => {
+  if(sel.value!=="__nova") return;
+  const n=prompt("Nome da conta (ex.: Sicredi, Caixa, Nubank do pai):");
+  if(n){ const o=document.createElement("option"); o.textContent=n.trim(); sel.insertBefore(o,sel.lastElementChild); sel.value=n.trim(); }
+  else sel.selectedIndex=0;
+};
+window.togglePg = chk => { $("#pg-campos").style.display = chk.checked ? "block" : "none"; };
+
 window.novaDespesa = () => {
   openModal(`<h3>Lançar despesa</h3>
     <label>Casa</label><select id="f-casa">${casas.map(c=>`<option value="${c.id}">${esc(c.nome)}</option>`).join("")}</select>
     <label>Tipo</label><select id="f-tipo"><option value="agua">💧 Água</option><option value="energia">⚡ Energia</option><option value="reparo">🔧 Reparo</option><option value="outro">📦 Outro</option></select>
     <label>Descrição (ex.: Água Casa 03, talão junto c/ 04)</label><input id="f-desc">
     <label>Valor (R$)</label><input id="f-val" type="number" step="0.01" inputmode="decimal">
-    <label>Data</label><input id="f-data" type="date" value="${hoje()}">
+    <label>Data de vencimento</label><input id="f-venc" type="date" value="${hoje()}">
+    <label class="row" style="margin-top:14px"><input type="checkbox" id="f-jaPagou" style="width:auto" onchange="togglePg(this)"> já foi paga</label>
+    <div id="pg-campos" style="display:none">
+      <label>Data do pagamento</label><input id="f-pgData" type="date" value="${hoje()}">
+      <label>Forma de pagamento</label>${selForma("Pix")}
+      <label>Conta que pagou</label>${selConta()}
+    </div>
     <div class="mAct"><button class="btn sec" onclick="closeModal()">Cancelar</button>
     <button class="btn" onclick="salvarDesp()">Salvar</button></div>`);
 };
 window.salvarDesp = async () => {
   const val=parseFloat($("#f-val").value); if(!val){ alert("Informe o valor."); return; }
-  await addDoc(collection(db,"despesas"),{casaId:$("#f-casa").value,tipo:$("#f-tipo").value,descricao:$("#f-desc").value.trim(),valor:val,data:$("#f-data").value||hoje()});
+  const pagou=$("#f-jaPagou").checked;
+  await addDoc(collection(db,"despesas"),{
+    casaId:$("#f-casa").value, tipo:$("#f-tipo").value, descricao:$("#f-desc").value.trim(),
+    valor:val, vencimento:$("#f-venc").value||hoje(),
+    pagamento: pagou ? ($("#f-pgData").value||hoje()) : null,
+    formaPag: pagou ? $("#f-forma").value : "", conta: pagou ? $("#f-conta").value : ""
+  });
+  closeModal();
+};
+window.pagarDesp = id => {
+  const d=despesas.find(x=>x.id===id);
+  openModal(`<h3>Registrar pagamento</h3>
+    <p class="muted">${TIPO_DESP[d.tipo]||d.tipo}${d.descricao?` · ${esc(d.descricao)}`:""} · ${fmt(d.valor)} · vence ${dBr(vencDesp(d))}</p>
+    <label>Data do pagamento</label><input id="f-pgData" type="date" value="${hoje()}">
+    <label>Forma de pagamento</label>${selForma("Pix")}
+    <label>Conta que pagou</label>${selConta(d.conta)}
+    <div class="mAct"><button class="btn sec" onclick="closeModal()">Cancelar</button>
+    <button class="btn" onclick="confPagarDesp('${id}')">Confirmar</button></div>`);
+};
+window.confPagarDesp = async id => {
+  await updateDoc(doc(db,"despesas",id),{pagamento:$("#f-pgData").value||hoje(),formaPag:$("#f-forma").value,conta:$("#f-conta").value});
+  closeModal();
+};
+window.editDesp = id => {
+  const d=despesas.find(x=>x.id===id);
+  openModal(`<h3>Editar despesa</h3>
+    <label>Casa</label><select id="f-casa">${casas.map(c=>`<option value="${c.id}" ${c.id===d.casaId?"selected":""}>${esc(c.nome)}</option>`).join("")}</select>
+    <label>Tipo</label><select id="f-tipo">${Object.entries(TIPO_DESP).map(([k,v])=>`<option value="${k}" ${k===d.tipo?"selected":""}>${v}</option>`).join("")}</select>
+    <label>Descrição</label><input id="f-desc" value="${esc(d.descricao||"")}">
+    <label>Valor (R$)</label><input id="f-val" type="number" step="0.01" value="${d.valor}">
+    <label>Data de vencimento</label><input id="f-venc" type="date" value="${vencDesp(d)}">
+    ${d.pagamento?`
+    <label>Data do pagamento</label><input id="f-pgData" type="date" value="${d.pagamento}">
+    <label>Forma de pagamento</label>${selForma(d.formaPag||"Pix")}
+    <label>Conta que pagou</label>${selConta(d.conta)}
+    <label class="row"><input type="checkbox" id="f-desfazer" style="width:auto"> desfazer pagamento (volta pra "em aberto")</label>`:""}
+    <div class="mAct"><button class="btn sec" onclick="closeModal()">Cancelar</button>
+    <button class="btn" onclick="salvarEditDesp('${id}')">Salvar</button></div>`);
+};
+window.salvarEditDesp = async id => {
+  const d=despesas.find(x=>x.id===id);
+  const val=parseFloat($("#f-val").value); if(!val){ alert("Informe o valor."); return; }
+  const upd={casaId:$("#f-casa").value,tipo:$("#f-tipo").value,descricao:$("#f-desc").value.trim(),valor:val,vencimento:$("#f-venc").value||vencDesp(d)};
+  if(d.pagamento){
+    if($("#f-desfazer")?.checked){ upd.pagamento=null; upd.formaPag=""; upd.conta=""; }
+    else { upd.pagamento=$("#f-pgData").value||d.pagamento; upd.formaPag=$("#f-forma").value; upd.conta=$("#f-conta").value; }
+  }
+  await updateDoc(doc(db,"despesas",id),upd);
   closeModal();
 };
 window.delDesp = async id => { if(confirm("Excluir esta despesa?")) await deleteDoc(doc(db,"despesas",id)); };
