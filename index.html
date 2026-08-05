@@ -238,6 +238,17 @@ function statusCob(cob){
 }
 const TIPO_COB={aluguel:"🏠 Aluguel atrasado",agua:"💧 Água",energia:"⚡ Energia",reparo:"🔧 Reparo",acordo:"🤝 Acordo",outro:"📦 Outro"};
 
+/* saldo devedor total do inquilino: aluguéis em aberto + cobranças avulsas */
+function saldoDevedor(c){
+  let aluguel=0, avulso=0;
+  for(const ym of compsDo(c)){
+    const f=Math.max(0, devidoComp(c,ym)-pagoComp(c.id,ym));
+    aluguel+=f;
+  }
+  for(const cob of cobrancasDe(c.id)) avulso+=faltaCob(cob);
+  return {aluguel, avulso, total:aluguel+avulso};
+}
+
 /* ---------- render ---------- */
 function render(){
   if(!user) return;
@@ -355,9 +366,11 @@ function renderCasas(){
           const c=contratoAtivoDa(u.id);
           const st = c ? statusComp(c,ym) : "vaga";
           const tag = c ? stTag(st) : '<span class="tag t-vaga">Vaga</span>';
+          const s = c ? saldoDevedor(c) : {total:0};
           return `<div class="tile" onclick="abrirUnidade('${u.id}')">
             <div class="nm">${esc(u.nome)}</div>
-            <div class="inq">${c?esc(c.nome.split(" ")[0]):"—"}</div>${tag}</div>`;
+            <div class="inq">${c?esc(c.nome.split(" ")[0]):"—"}</div>${tag}
+            ${s.total>0.005?`<div style="font-size:11px;font-weight:700;color:var(--red);margin-top:4px">${fmt(s.total)}</div>`:""}</div>`;
         }).join("") || `<p class="muted">Nenhuma unidade ainda.</p>`}
       </div></div>`;
   }).join("")}
@@ -396,6 +409,18 @@ async function renderUnidade(uId){
         entrada ${dBr(c.dataEntrada)} · ${mesesEntre(ymDe(c.dataEntrada),ymAtual())} meses de casa</p>
       ${c.trabalho?`<p class="muted">💼 ${esc(c.trabalho)}</p>`:""}
       ${c.obs?`<p class="muted">📝 ${esc(c.obs)}</p>`:""}
+      ${(() => {
+        const s=saldoDevedor(c);
+        if(s.total<=0.005) return `<div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:var(--green-bg)">
+          <b style="color:var(--green)">✓ Em dia</b> <span class="muted">— sem pendências</span></div>`;
+        const partes=[];
+        if(s.aluguel>0.005) partes.push(`aluguéis ${fmt(s.aluguel)}`);
+        if(s.avulso>0.005) partes.push(`avulsas ${fmt(s.avulso)}`);
+        return `<div style="margin-top:10px;padding:12px;border-radius:10px;background:var(--red-bg)">
+          <div class="spread"><b style="color:var(--red);font-size:13px">SALDO DEVEDOR</b>
+            <b style="color:var(--red);font-family:'Bricolage Grotesque';font-size:20px">${fmt(s.total)}</b></div>
+          <div class="muted" style="margin-top:2px">${partes.join(" · ")}</div></div>`;
+      })()}
       <div class="row" style="margin-top:10px;flex-wrap:wrap">
         <span class="tag t-pago" style="font-size:12.5px">Aluguel ${fmt(valorVigente(c,ymAtual()))}</span>
         <span class="tag t-aberto" style="font-size:12.5px">Vence dia ${c.diaVenc}</span>
@@ -902,6 +927,10 @@ function renderDevedores(){
     <div class="kpi liq"><div class="l">Total a receber de devedores</div><div class="v" style="color:${totalAberto>0?'var(--red)':'var(--green)'}">${fmt(totalAberto)}</div>
       <div class="muted">${devs.length} ${devs.length===1?"pessoa":"pessoas"} com pendência</div></div>
   </div>
+  ${devs.length?`<div class="card"><div class="row" style="flex-wrap:wrap">
+    <button class="btn sm" onclick="imprimirDevedores()">🖨️ Ver / Imprimir (PDF)</button>
+    <button class="btn sm sec" onclick="baixarDevedores()">⬇️ Baixar p/ WhatsApp</button>
+  </div></div>`:""}
   ${devs.length ? devs.map(d=>`
     <div class="card">
       <div class="spread"><h3 class="disp" style="font-size:16px">${esc(d.nome)}</h3>
@@ -915,6 +944,7 @@ function renderDevedores(){
             <div><b>${TIPO_COB[cob.tipo]||cob.tipo}</b>${cob.descricao?` · ${esc(cob.descricao)}`:""}
               <div class="muted">venc. ${dBr(cob.vencimento)} · ${fmt(pg)} de ${fmt(cob.valor)}${f>0.005?` · falta <b>${fmt(f)}</b>`:""}</div></div>
             <div class="row">${stTag(st)}${f>0.005?`<button class="btn sm" onclick="pagarCob('${cob.id}')">＋ pagar</button>`:""}
+              <button class="iconb" onclick="editCobDevedor('${cob.id}')">✎</button>
               <button class="iconb" onclick="delCob('${cob.id}')">🗑</button></div>
           </div>
           ${pgs.map((p,i)=>`<div class="muted spread" style="margin-top:4px"><span>💵 ${dBr(p.data)} — ${fmt(p.valor)}${p.obs?` · ${esc(p.obs)}`:""}</span><button class="iconb" onclick="delPagCob('${cob.id}',${i})">🗑</button></div>`).join("")}
@@ -974,6 +1004,89 @@ window.salvarCobDevedor = async (nome,tel) => {
     valor:val, vencimento:$("#f-venc").value||hoje(), pagamentos:[]
   });
   closeModal();
+};
+window.editCobDevedor = id => {
+  const cob=cobrancas.find(x=>x.id===id); if(!cob) return;
+  openModal(`<h3>Editar dívida</h3>
+    <label>Nome do devedor</label><input id="f-nome" value="${esc(cob.devedor||"")}">
+    <label>Telefone</label><input id="f-tel" value="${esc(cob.telefone||"")}">
+    <label>Tipo</label><select id="f-tipo">${Object.entries(TIPO_COB).map(([k,v])=>`<option value="${k}" ${k===cob.tipo?"selected":""}>${v}</option>`).join("")}</select>
+    <label>Descrição</label><input id="f-desc" value="${esc(cob.descricao||"")}">
+    <label>Valor (R$)</label><input id="f-val" type="number" step="0.01" value="${cob.valor}">
+    <label>Vencimento</label><input id="f-venc" type="date" value="${cob.vencimento||hoje()}">
+    <div class="mAct"><button class="btn sec" onclick="closeModal()">Cancelar</button>
+    <button class="btn" onclick="salvarEditCobDevedor('${id}')">Salvar</button></div>`);
+};
+window.salvarEditCobDevedor = async id => {
+  const nome=$("#f-nome").value.trim(), val=parseFloat($("#f-val").value);
+  if(!nome||!val){ alert("Preencha nome e valor."); return; }
+  await updateDoc(doc(db,"cobrancas",id),{
+    devedor:nome, telefone:$("#f-tel").value.trim(), tipo:$("#f-tipo").value,
+    descricao:$("#f-desc").value.trim(), valor:val, vencimento:$("#f-venc").value||hoje()
+  });
+  closeModal();
+};
+
+/* relatório de devedores */
+function htmlDevedores(){
+  const devs=devedoresAgrupados();
+  const total=devs.reduce((s,d)=>s+d.falta,0);
+  const hj=new Date().toLocaleDateString("pt-BR");
+  const stTxt={pago:"Pago",parcial:"Parcial",aberto:"Em aberto",atrasado:"Atrasado"};
+  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Relatório de Devedores</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font:13px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;color:#22261F;padding:32px;max-width:800px;margin:0 auto}
+    h1{font-size:22px;margin-bottom:2px} .sub{color:#7C8074;font-size:12px;margin-bottom:20px}
+    h2{font-size:15px;margin:20px 0 4px;color:#B23E2C} .tel{color:#7C8074;font-size:12px;margin-bottom:6px}
+    table{width:100%;border-collapse:collapse;margin-bottom:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #E5E3D9}
+    th{font-size:11px;text-transform:uppercase;color:#7C8074;letter-spacing:.04em}
+    td.n,th.n{text-align:right} .tot{font-weight:700}
+    .big{border:1px solid #B23E2C;background:#F9E6E1;border-radius:10px;padding:12px 16px;margin-bottom:16px}
+    .big .l{font-size:11px;text-transform:uppercase;color:#7C8074} .big .v{font-size:22px;font-weight:700;color:#B23E2C}
+    .foot{margin-top:30px;font-size:11px;color:#7C8074;border-top:1px solid #E5E3D9;padding-top:10px}
+    .r{color:#B23E2C;font-weight:700}
+    @media print{body{padding:12px}.noprint{display:none}}
+  </style></head><body>
+  <h1>Relatório de Devedores</h1>
+  <div class="sub">Ex-inquilinos e cobranças fora das kitnets · Emitido em ${hj}</div>
+  <div class="big"><div class="l">Total a receber</div><div class="v">${fmt(total)}</div><div style="font-size:12px;color:#7C8074">${devs.length} ${devs.length===1?"pessoa":"pessoas"}</div></div>
+  ${devs.map(d=>`
+    <h2>${esc(d.nome)} — deve ${fmt(d.falta)}</h2>
+    ${d.telefone?`<div class="tel">Tel: ${esc(d.telefone)}</div>`:""}
+    <table><thead><tr><th>Tipo</th><th>Descrição</th><th>Vencimento</th><th class="n">Valor</th><th class="n">Pago</th><th class="n">Falta</th><th>Status</th></tr></thead>
+    <tbody>${d.cobrancas.map(cob=>{const pg=pagoCob(cob),f=faltaCob(cob);return `<tr><td>${(TIPO_COB[cob.tipo]||cob.tipo).replace(/[^ -~À-ÿ]/g,"").trim()}</td><td>${esc(cob.descricao||"—")}</td><td>${dBr(cob.vencimento)}</td><td class="n">${fmt(cob.valor)}</td><td class="n">${fmt(pg)}</td><td class="n">${f>0.005?fmt(f):"—"}</td><td>${stTxt[statusCob(cob)]}</td></tr>`;}).join("")}
+    <tr class="tot"><td colspan="5">Total ${esc(d.nome)}</td><td class="n r">${fmt(d.falta)}</td><td></td></tr>
+    </tbody></table>
+  `).join("")}
+  <div class="foot">Relatório gerado pelo sistema de gestão de kitnets · ${hj}</div>
+  <div class="noprint" style="margin-top:20px;text-align:center"><button onclick="window.print()" style="padding:10px 20px;background:#2E6B46;color:#fff;border:none;border-radius:8px;font-size:14px;cursor:pointer">🖨️ Imprimir / Salvar PDF</button></div>
+  </body></html>`;
+}
+window.imprimirDevedores = () => {
+  const w=window.open("","_blank");
+  if(!w){ alert("Permita pop-ups para abrir o relatório."); return; }
+  w.document.write(htmlDevedores()); w.document.close();
+};
+window.baixarDevedores = () => {
+  const devs=devedoresAgrupados();
+  const total=devs.reduce((s,d)=>s+d.falta,0);
+  let t=`*RELATÓRIO DE DEVEDORES*\n_Ex-inquilinos e cobranças fora das kitnets_\n\n`;
+  t+=`🔴 *Total a receber: ${fmt(total)}*\n(${devs.length} ${devs.length===1?"pessoa":"pessoas"})\n`;
+  t+=`\n————————————\n`;
+  for(const d of devs){
+    t+=`\n*${d.nome}* — deve ${fmt(d.falta)}\n`;
+    if(d.telefone) t+=`📞 ${d.telefone}\n`;
+    for(const cob of d.cobrancas){
+      const f=faltaCob(cob);
+      const emoji=statusCob(cob)==="pago"?"✅":statusCob(cob)==="atrasado"?"🔴":statusCob(cob)==="parcial"?"🟡":"⬜";
+      t+=`${emoji} ${(TIPO_COB[cob.tipo]||cob.tipo)}${cob.descricao?` (${cob.descricao})`:""}: ${fmt(cob.valor)}${f>0.005&&f<Number(cob.valor)?` · falta ${fmt(f)}`:""} · venc. ${dBr(cob.vencimento)}\n`;
+    }
+  }
+  t+=`\n_Emitido em ${new Date().toLocaleDateString("pt-BR")}_`;
+  const blob=new Blob([t],{type:"text/plain;charset=utf-8"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+  a.download=`relatorio-devedores.txt`; a.click();
 };
 
 /* ---------- RELATÓRIO ---------- */
