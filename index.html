@@ -128,7 +128,7 @@ const esc = s => String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">
 const uid = () => Math.random().toString(36).slice(2,9);
 
 /* ---------- estado ---------- */
-let user=null, casas=[], unidades=[], contratos=[], pagamentos=[], despesas=[];
+let user=null, casas=[], unidades=[], contratos=[], pagamentos=[], despesas=[], cobrancas=[];
 let view={name:"home"}, mesSel=ymAtual(), unsub=[], carregado={c:0};
 
 const $ = s => document.querySelector(s);
@@ -163,6 +163,7 @@ function iniciar(){
   escuta("contratos", v=>contratos=v);
   escuta("pagamentos", v=>pagamentos=v);
   escuta("despesas", v=>despesas=v.sort((a,b)=>(b.vencimento||b.data||"").localeCompare(a.vencimento||a.data||"")));
+  escuta("cobrancas", v=>cobrancas=v.sort((a,b)=>(a.vencimento||"").localeCompare(b.vencimento||"")));
   setTimeout(seedSePreciso, 2500);
 }
 
@@ -225,6 +226,18 @@ function compsDo(c){
 }
 function mesesEntre(d1,d2){ const [y1,m1]=d1.split("-").map(Number),[y2,m2]=d2.split("-").map(Number); return Math.max(0,(y2-y1)*12+(m2-m1)); }
 
+/* ---------- cobranças avulsas (por inquilino) ---------- */
+const cobrancasDe = cId => cobrancas.filter(x=>x.contratoId===cId);
+const pagoCob = cob => (cob.pagamentos||[]).reduce((s,p)=>s+Number(p.valor),0);
+const faltaCob = cob => Math.max(0, Number(cob.valor) - pagoCob(cob));
+function statusCob(cob){
+  const f=faltaCob(cob);
+  if(f<=0.005) return "pago";
+  const venceu=(cob.vencimento||hoje())<hoje();
+  return pagoCob(cob)>0 ? (venceu?"atrasado":"parcial") : (venceu?"atrasado":"aberto");
+}
+const TIPO_COB={aluguel:"🏠 Aluguel atrasado",agua:"💧 Água",energia:"⚡ Energia",reparo:"🔧 Reparo",acordo:"🤝 Acordo",outro:"📦 Outro"};
+
 /* ---------- render ---------- */
 function render(){
   if(!user) return;
@@ -271,6 +284,17 @@ function renderHome(){
 
   pend.sort((a,b)=>(b.venceu-a.venceu)||b.falta-a.falta);
 
+  // cobranças avulsas em aberto (independente do mês de aluguel)
+  const cobPend=[];
+  for(const cob of cobrancas){
+    const f=faltaCob(cob); if(f<=0.005) continue;
+    const c=contratos.find(x=>x.id===cob.contratoId); if(!c) continue;
+    const u=unidades.find(x=>x.id===c.unidadeId);
+    const venceu=(cob.vencimento||hoje())<hoje();
+    cobPend.push({cob,c,u,f,venceu});
+  }
+  cobPend.sort((a,b)=>(b.venceu-a.venceu)||b.f-a.f);
+
   app.innerHTML = `
   <div class="hdr"><div><div class="sub">Gestão de aluguéis</div><h1>Kitnets</h1></div>
     <button class="iconb" title="Sair" onclick="sair()">⎋ sair</button></div>
@@ -294,6 +318,13 @@ function renderHome(){
         <div style="text-align:right"><b style="color:${p.venceu?'var(--red)':'var(--amber)'}">${fmt(p.falta)}</b><div>${p.venceu?'<span class="tag t-atrasado">Atrasado</span>':'<span class="tag t-aberto">A vencer</span>'}</div></div>
       </div>`).join("") : `<p class="muted" style="padding:8px 0">Nenhuma pendência neste mês. 🎉</p>`}
   </div>
+  ${cobPend.length?`<div class="card">
+    <div class="spread"><h3 class="disp" style="font-size:15.5px">Cobranças avulsas em aberto</h3></div>
+    ${cobPend.map(p=>`<div class="pend" onclick="abrirUnidade('${p.u?.id}')" style="cursor:pointer">
+      <div><b>${esc(p.c.nome)}</b><div class="muted">${esc(p.u?.nome||"?")} · ${esc((TIPO_COB[p.cob.tipo]||p.cob.tipo))}${p.cob.descricao?` · ${esc(p.cob.descricao)}`:""} · venc. ${dBr(p.cob.vencimento)}</div></div>
+      <div style="text-align:right"><b style="color:${p.venceu?'var(--red)':'var(--amber)'}">${fmt(p.f)}</b><div>${p.venceu?'<span class="tag t-atrasado">Atrasado</span>':'<span class="tag t-aberto">A vencer</span>'}</div></div>
+    </div>`).join("")}
+  </div>`:""}
   ${nav()}`;
 }
 window.sair = () => signOut(auth);
@@ -389,6 +420,27 @@ async function renderUnidade(uId){
           ${pgs.map(p=>`<div class="muted spread" style="margin-top:4px"><span>💵 ${dBr(p.data)} — ${fmt(p.valor)}${p.obs?` · ${esc(p.obs)}`:""}</span><button class="iconb" onclick="delPag('${p.id}')">🗑</button></div>`).join("")}
         </div>`;
       }).join("")}
+    </div>
+    <div class="card">
+      <div class="spread"><h3 class="disp" style="font-size:15.5px">Cobranças avulsas</h3>
+        <button class="btn sm" onclick="novaCob('${c.id}')">＋ cobrança</button></div>
+      ${(() => {
+        const cbs=cobrancasDe(c.id);
+        if(!cbs.length) return `<p class="muted" style="padding:6px 0">Nenhuma cobrança avulsa. Use para dívidas antigas, rateio de água/energia, reparos ou acordos.</p>`;
+        return cbs.map(cob=>{
+          const st=statusCob(cob), pg=pagoCob(cob), f=faltaCob(cob);
+          const pgs=(cob.pagamentos||[]);
+          return `<div class="compRow" style="flex-direction:column;align-items:stretch">
+            <div class="spread">
+              <div><b>${TIPO_COB[cob.tipo]||cob.tipo}</b>${cob.descricao?` · ${esc(cob.descricao)}`:""}
+                <div class="muted">venc. ${dBr(cob.vencimento)} · ${fmt(pg)} de ${fmt(cob.valor)}${f>0.005?` · falta <b>${fmt(f)}</b>`:""}</div></div>
+              <div class="row">${stTag(st)}${f>0.005?`<button class="btn sm" onclick="pagarCob('${cob.id}')">＋ pagar</button>`:""}
+                <button class="iconb" onclick="delCob('${cob.id}')">🗑</button></div>
+            </div>
+            ${pgs.map((p,i)=>`<div class="muted spread" style="margin-top:4px"><span>💵 ${dBr(p.data)} — ${fmt(p.valor)}${p.obs?` · ${esc(p.obs)}`:""}</span><button class="iconb" onclick="delPagCob('${cob.id}',${i})">🗑</button></div>`).join("")}
+          </div>`;
+        }).join("");
+      })()}
     </div>`;
   }
 
@@ -469,6 +521,53 @@ window.salvarPag = async (cId,ym) => {
   closeModal();
 };
 window.delPag = async id => { if(confirm("Excluir este pagamento?")) await deleteDoc(doc(db,"pagamentos",id)); };
+
+/* ---------- cobranças avulsas: criar / pagar / excluir ---------- */
+window.novaCob = cId => {
+  const c=contratos.find(x=>x.id===cId);
+  openModal(`<h3>Nova cobrança avulsa</h3><p class="muted">${esc(c.nome)}</p>
+    <label>Tipo</label><select id="f-tipo">${Object.entries(TIPO_COB).map(([k,v])=>`<option value="${k}">${v}</option>`).join("")}</select>
+    <label>Descrição (ex.: Aluguel de maio, rateio água junho)</label><input id="f-desc">
+    <label>Valor (R$)</label><input id="f-val" type="number" step="0.01" inputmode="decimal">
+    <label>Vencimento</label><input id="f-venc" type="date" value="${hoje()}">
+    <label class="row" style="margin-top:12px"><input type="checkbox" id="f-jaPagou" style="width:auto" onchange="document.getElementById('cob-pg').style.display=this.checked?'block':'none'"> já foi paga integralmente</label>
+    <div id="cob-pg" style="display:none"><label>Data do pagamento</label><input id="f-pgData" type="date" value="${hoje()}"></div>
+    <div class="mAct"><button class="btn sec" onclick="closeModal()">Cancelar</button>
+    <button class="btn" onclick="salvarCob('${cId}')">Salvar</button></div>`);
+};
+window.salvarCob = async cId => {
+  const val=parseFloat($("#f-val").value); if(!val){ alert("Informe o valor."); return; }
+  const paga=$("#f-jaPagou").checked;
+  await addDoc(collection(db,"cobrancas"),{
+    contratoId:cId, tipo:$("#f-tipo").value, descricao:$("#f-desc").value.trim(),
+    valor:val, vencimento:$("#f-venc").value||hoje(),
+    pagamentos: paga ? [{data:$("#f-pgData").value||hoje(),valor:val,obs:"pago integral"}] : []
+  });
+  closeModal();
+};
+window.pagarCob = id => {
+  const cob=cobrancas.find(x=>x.id===id); const f=faltaCob(cob);
+  openModal(`<h3>Pagar cobrança</h3><p class="muted">${TIPO_COB[cob.tipo]||cob.tipo}${cob.descricao?` · ${esc(cob.descricao)}`:""} · falta ${fmt(f)}</p>
+    <label>Data</label><input id="f-data" type="date" value="${hoje()}">
+    <label>Valor (R$)</label><input id="f-val" type="number" step="0.01" inputmode="decimal" value="${f.toFixed(2)}">
+    <label>Observação (ex.: Pix, dinheiro)</label><input id="f-obs">
+    <div class="mAct"><button class="btn sec" onclick="closeModal()">Cancelar</button>
+    <button class="btn" onclick="confPagarCob('${id}')">Salvar</button></div>`);
+};
+window.confPagarCob = async id => {
+  const cob=cobrancas.find(x=>x.id===id);
+  const val=parseFloat($("#f-val").value); if(!val){ alert("Informe o valor."); return; }
+  const novos=[...(cob.pagamentos||[]),{data:$("#f-data").value||hoje(),valor:val,obs:$("#f-obs").value.trim()}];
+  await updateDoc(doc(db,"cobrancas",id),{pagamentos:novos});
+  closeModal();
+};
+window.delPagCob = async (id,idx) => {
+  const cob=cobrancas.find(x=>x.id===id); if(!cob) return;
+  if(!confirm("Excluir este pagamento?")) return;
+  const novos=(cob.pagamentos||[]).filter((_,i)=>i!==idx);
+  await updateDoc(doc(db,"cobrancas",id),{pagamentos:novos});
+};
+window.delCob = async id => { if(confirm("Excluir esta cobrança avulsa?")) await deleteDoc(doc(db,"cobrancas",id)); };
 
 window.reajustar = cId => {
   const c=contratos.find(x=>x.id===cId);
