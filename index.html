@@ -245,11 +245,12 @@ function render(){
   else if(view.name==="casas") renderCasas();
   else if(view.name==="unidade") renderUnidade(view.unidadeId);
   else if(view.name==="despesas") renderDespesas();
+  else if(view.name==="devedores") renderDevedores();
   else if(view.name==="relatorio") renderRelatorio();
 }
 function nav(){
   const b=(n,ic,l)=>`<button class="${view.name===n?'on':''}" onclick="go('${n}')"><span class="ic">${ic}</span>${l}</button>`;
-  return `<nav>${b("home","📊","Início")}${b("casas","🏘️","Casas")}${b("despesas","💸","Despesas")}${b("relatorio","📄","Relatório")}</nav>`;
+  return `<nav>${b("home","📊","Início")}${b("casas","🏘️","Casas")}${b("despesas","💸","Despesas")}${b("devedores","⚠️","Devedores")}${b("relatorio","📄","Relatório")}</nav>`;
 }
 window.go = n => { view={name:n}; render(); window.scrollTo(0,0); };
 window.abrirUnidade = id => { view={name:"unidade",unidadeId:id}; render(); window.scrollTo(0,0); };
@@ -287,6 +288,7 @@ function renderHome(){
   // cobranças avulsas em aberto (independente do mês de aluguel)
   const cobPend=[];
   for(const cob of cobrancas){
+    if(!cob.contratoId) continue; // cobranças de devedor têm aba própria
     const f=faltaCob(cob); if(f<=0.005) continue;
     const c=contratos.find(x=>x.id===cob.contratoId); if(!c) continue;
     const u=unidades.find(x=>x.id===c.unidadeId);
@@ -294,6 +296,8 @@ function renderHome(){
     cobPend.push({cob,c,u,f,venceu});
   }
   cobPend.sort((a,b)=>(b.venceu-a.venceu)||b.f-a.f);
+  // total em aberto de devedores (ex-inquilinos / não cadastrados)
+  const devAberto=cobrancas.filter(x=>x.devedor && !x.contratoId).reduce((s,c)=>s+faltaCob(c),0);
 
   app.innerHTML = `
   <div class="hdr"><div><div class="sub">Gestão de aluguéis</div><h1>Kitnets</h1></div>
@@ -324,6 +328,11 @@ function renderHome(){
       <div><b>${esc(p.c.nome)}</b><div class="muted">${esc(p.u?.nome||"?")} · ${esc((TIPO_COB[p.cob.tipo]||p.cob.tipo))}${p.cob.descricao?` · ${esc(p.cob.descricao)}`:""} · venc. ${dBr(p.cob.vencimento)}</div></div>
       <div style="text-align:right"><b style="color:${p.venceu?'var(--red)':'var(--amber)'}">${fmt(p.f)}</b><div>${p.venceu?'<span class="tag t-atrasado">Atrasado</span>':'<span class="tag t-aberto">A vencer</span>'}</div></div>
     </div>`).join("")}
+  </div>`:""}
+  ${devAberto>0.005?`<div class="card" onclick="go('devedores')" style="cursor:pointer">
+    <div class="spread"><h3 class="disp" style="font-size:15.5px">⚠️ Devedores (fora das kitnets)</h3>
+      <b style="color:var(--red)">${fmt(devAberto)}</b></div>
+    <p class="muted">Ex-inquilinos e pessoas com dívidas pendentes. Toque para ver.</p>
   </div>`:""}
   ${nav()}`;
 }
@@ -852,6 +861,120 @@ window.salvarEditDesp = async id => {
   closeModal();
 };
 window.delDesp = async id => { if(confirm("Excluir esta despesa?")) await deleteDoc(doc(db,"despesas",id)); };
+
+/* ---------- DEVEDORES (ex-inquilinos e não cadastrados) ---------- */
+// cobranças de devedor: guardam campo "devedor" (nome) em vez de contrato ativo
+const cobrancasDevedor = () => cobrancas.filter(x=>x.devedor && !x.contratoId);
+function devedoresAgrupados(){
+  const map={};
+  for(const cob of cobrancasDevedor()){
+    const k=cob.devedor;
+    if(!map[k]) map[k]={nome:cob.devedor, telefone:cob.telefone||"", cobrancas:[]};
+    if(cob.telefone && !map[k].telefone) map[k].telefone=cob.telefone;
+    map[k].cobrancas.push(cob);
+  }
+  return Object.values(map).map(d=>{
+    d.total=d.cobrancas.reduce((s,c)=>s+Number(c.valor),0);
+    d.pago=d.cobrancas.reduce((s,c)=>s+pagoCob(c),0);
+    d.falta=Math.max(0,d.total-d.pago);
+    return d;
+  }).sort((a,b)=>b.falta-a.falta);
+}
+// ex-inquilinos: contratos encerrados (para o seletor "puxar do histórico")
+function exInquilinos(){
+  const vistos=new Set(); const out=[];
+  for(const c of contratos.filter(x=>!x.ativo)){
+    const chave=c.nome+"|"+(c.telefone||"");
+    if(vistos.has(chave)) continue; vistos.add(chave);
+    const u=unidades.find(x=>x.id===c.unidadeId);
+    out.push({nome:c.nome, telefone:c.telefone||"", ref:u?`saiu de ${u.nome}`:"", contratoOrigem:c.id});
+  }
+  return out.sort((a,b)=>a.nome.localeCompare(b.nome,"pt-BR"));
+}
+
+function renderDevedores(){
+  const devs=devedoresAgrupados();
+  const totalAberto=devs.reduce((s,d)=>s+d.falta,0);
+  app.innerHTML=`
+  <div class="hdr"><div><div class="sub">Dívidas fora das kitnets</div><h1>Devedores</h1></div>
+    <button class="btn sm" onclick="novoDevedor()">＋ dívida</button></div>
+  <div class="kgrid">
+    <div class="kpi liq"><div class="l">Total a receber de devedores</div><div class="v" style="color:${totalAberto>0?'var(--red)':'var(--green)'}">${fmt(totalAberto)}</div>
+      <div class="muted">${devs.length} ${devs.length===1?"pessoa":"pessoas"} com pendência</div></div>
+  </div>
+  ${devs.length ? devs.map(d=>`
+    <div class="card">
+      <div class="spread"><h3 class="disp" style="font-size:16px">${esc(d.nome)}</h3>
+        <b style="color:${d.falta>0.005?'var(--red)':'var(--green)'}">${d.falta>0.005?fmt(d.falta):"quitado ✓"}</b></div>
+      ${d.telefone?`<p class="muted">📞 <a href="https://wa.me/55${d.telefone.replace(/\D/g,"")}">${esc(d.telefone)}</a></p>`:""}
+      ${d.cobrancas.map(cob=>{
+        const st=statusCob(cob), pg=pagoCob(cob), f=faltaCob(cob);
+        const pgs=(cob.pagamentos||[]);
+        return `<div class="compRow" style="flex-direction:column;align-items:stretch">
+          <div class="spread">
+            <div><b>${TIPO_COB[cob.tipo]||cob.tipo}</b>${cob.descricao?` · ${esc(cob.descricao)}`:""}
+              <div class="muted">venc. ${dBr(cob.vencimento)} · ${fmt(pg)} de ${fmt(cob.valor)}${f>0.005?` · falta <b>${fmt(f)}</b>`:""}</div></div>
+            <div class="row">${stTag(st)}${f>0.005?`<button class="btn sm" onclick="pagarCob('${cob.id}')">＋ pagar</button>`:""}
+              <button class="iconb" onclick="delCob('${cob.id}')">🗑</button></div>
+          </div>
+          ${pgs.map((p,i)=>`<div class="muted spread" style="margin-top:4px"><span>💵 ${dBr(p.data)} — ${fmt(p.valor)}${p.obs?` · ${esc(p.obs)}`:""}</span><button class="iconb" onclick="delPagCob('${cob.id}',${i})">🗑</button></div>`).join("")}
+        </div>`;
+      }).join("")}
+      <button class="btn sm sec" style="margin-top:10px" onclick="addCobDevedor('${esc(d.nome).replace(/'/g,"\\'")}','${esc(d.telefone).replace(/'/g,"\\'")}')">＋ outra dívida desta pessoa</button>
+    </div>`).join("") : `<div class="card center" style="padding:24px"><div style="font-size:30px">✅</div><p style="margin-top:8px" class="muted">Nenhum devedor cadastrado. Use "＋ dívida" para registrar cobranças de ex-inquilinos ou pessoas que não estão nas kitnets.</p></div>`}
+  ${nav()}`;
+}
+window.novoDevedor = () => {
+  const exs=exInquilinos();
+  openModal(`<h3>Registrar dívida de devedor</h3>
+    <p class="muted">Para ex-inquilinos ou pessoas que não estão nas kitnets.</p>
+    ${exs.length?`<label>Ex-inquilino (puxa do histórico)</label>
+    <select id="f-ex" onchange="preencheEx(this)">
+      <option value="">— digitar pessoa nova —</option>
+      ${exs.map((e,i)=>`<option value="${i}">${esc(e.nome)}${e.ref?` (${esc(e.ref)})`:""}</option>`).join("")}
+    </select>`:""}
+    <label>Nome ${exs.length?"(ou escolha acima)":""} *</label><input id="f-nome">
+    <label>Telefone</label><input id="f-tel" inputmode="tel" placeholder="63 9....">
+    <label>Tipo</label><select id="f-tipo">${Object.entries(TIPO_COB).map(([k,v])=>`<option value="${k}">${v}</option>`).join("")}</select>
+    <label>Descrição (ex.: Aluguel de março, água de fev)</label><input id="f-desc">
+    <label>Valor (R$) *</label><input id="f-val" type="number" step="0.01" inputmode="decimal">
+    <label>Vencimento (pode ser a data original da dívida)</label><input id="f-venc" type="date" value="${hoje()}">
+    <div class="mAct"><button class="btn sec" onclick="closeModal()">Cancelar</button>
+    <button class="btn" onclick="salvarDevedor()">Salvar</button></div>`);
+  window._exCache=exs;
+};
+window.preencheEx = sel => {
+  const e=(window._exCache||[])[+sel.value];
+  if(e){ $("#f-nome").value=e.nome; $("#f-tel").value=e.telefone; $("#f-nome").dataset.origem=e.contratoOrigem||""; }
+  else { $("#f-nome").value=""; $("#f-tel").value=""; $("#f-nome").dataset.origem=""; }
+};
+window.salvarDevedor = async () => {
+  const nome=$("#f-nome").value.trim(), val=parseFloat($("#f-val").value);
+  if(!nome||!val){ alert("Preencha o nome e o valor."); return; }
+  await addDoc(collection(db,"cobrancas"),{
+    devedor:nome, telefone:$("#f-tel").value.trim(), tipo:$("#f-tipo").value,
+    descricao:$("#f-desc").value.trim(), valor:val, vencimento:$("#f-venc").value||hoje(),
+    pagamentos:[], contratoOrigem:$("#f-nome").dataset.origem||""
+  });
+  closeModal();
+};
+window.addCobDevedor = (nome,tel) => {
+  openModal(`<h3>Nova dívida</h3><p class="muted">${esc(nome)}</p>
+    <label>Tipo</label><select id="f-tipo">${Object.entries(TIPO_COB).map(([k,v])=>`<option value="${k}">${v}</option>`).join("")}</select>
+    <label>Descrição</label><input id="f-desc">
+    <label>Valor (R$)</label><input id="f-val" type="number" step="0.01" inputmode="decimal">
+    <label>Vencimento</label><input id="f-venc" type="date" value="${hoje()}">
+    <div class="mAct"><button class="btn sec" onclick="closeModal()">Cancelar</button>
+    <button class="btn" onclick="salvarCobDevedor('${esc(nome).replace(/'/g,"\\'")}','${esc(tel).replace(/'/g,"\\'")}')">Salvar</button></div>`);
+};
+window.salvarCobDevedor = async (nome,tel) => {
+  const val=parseFloat($("#f-val").value); if(!val){ alert("Informe o valor."); return; }
+  await addDoc(collection(db,"cobrancas"),{
+    devedor:nome, telefone:tel, tipo:$("#f-tipo").value, descricao:$("#f-desc").value.trim(),
+    valor:val, vencimento:$("#f-venc").value||hoje(), pagamentos:[]
+  });
+  closeModal();
+};
 
 /* ---------- RELATÓRIO ---------- */
 function dadosRelatorio(ym){
