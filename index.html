@@ -1376,7 +1376,7 @@ function htmlRelatorio(ym){
   ${r.porCasa.map(b=>`
     <h2>${b.casa.nome} — recebido ${fmt(b.recebido)}</h2>
     <table><thead><tr><th>Kitnet</th><th>Inquilino</th><th>Vencimento</th><th class="n">Devido</th><th class="n">Pago</th><th class="n">Falta</th><th>Status</th></tr></thead>
-    <tbody>${b.linhas.map(l=>`<tr><td>${esc(l.unidade)}</td><td>${esc(l.inquilino)}</td><td>dia ${l.diaVenc} (${dBr(l.venc)})</td><td class="n">${fmt(l.dev)}</td><td class="n">${fmt(l.pg)}</td><td class="n">${l.falta>0.005?fmt(l.falta):"—"}</td><td>${stTxt[l.st]}</td></tr>`).join("")||`<tr><td colspan="7" style="color:#7C8074">Sem inquilinos ativos</td></tr>`}
+    <tbody>${b.linhas.map(l=>`<tr><td>${esc(l.unidade)}</td><td>${esc(l.inquilino)}</td><td>${dBr(l.venc)}</td><td class="n">${fmt(l.dev)}</td><td class="n">${fmt(l.pg)}</td><td class="n">${l.falta>0.005?fmt(l.falta):"—"}</td><td>${stTxt[l.st]}</td></tr>`).join("")||`<tr><td colspan="7" style="color:#7C8074">Sem inquilinos ativos</td></tr>`}
     <tr class="tot"><td colspan="3">Subtotal recebido</td><td class="n">${fmt(b.previsto)}</td><td class="n">${fmt(b.recebido)}</td><td class="n">${fmt(b.atraso>0?b.atraso:0)}</td><td></td></tr>
     </tbody></table>
     <div style="font-size:12px;color:#7C8074;margin-bottom:4px">Despesas da casa (água/energia/reparos): <b class="a">${fmt(b.despesa)}</b></div>
