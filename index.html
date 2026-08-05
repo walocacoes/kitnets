@@ -346,13 +346,16 @@ function renderHome(){
   </div>
   <div class="card">
     <div class="spread"><h3 class="disp" style="font-size:15.5px">Pendências de ${ymLabel(ym)}</h3></div>
+    ${pend.length?`<p class="hint" style="margin:-2px 0 6px"><b>Baixar</b> = não cobrar este mês (pessoa continua) · <b>Encerrar</b> = a pessoa saiu, kitnet fica vaga</p>`:""}
     ${pend.length ? pend.map(p=>`
       <div class="pend">
         <div onclick="abrirUnidade('${p.u?.id}')" style="cursor:pointer;flex:1"><b>${esc(p.c.nome)}</b><div class="muted">${esc(p.u?.nome||"?")} · venc. dia ${p.c.diaVenc} · pagou ${fmt(p.pg)} de ${fmt(p.dev)}</div></div>
         <div style="text-align:right"><b style="color:${p.venceu?'var(--red)':'var(--amber)'}">${fmt(p.falta)}</b>
           <div>${p.venceu?'<span class="tag t-atrasado">Atrasado</span>':'<span class="tag t-aberto">A vencer</span>'}</div>
-          ${p.fantasma?`<button class="btn sm danger" style="margin-top:4px" onclick="encerrarFantasma('${p.c.id}')">Encerrar (ex-inquilino)</button>`:
-            `<button class="btn sm sec" style="margin-top:4px" onclick="baixarComp('${p.c.id}','${ym}')">Baixar</button>`}</div>
+          <div class="row" style="justify-content:flex-end;gap:4px;margin-top:4px;flex-wrap:wrap">
+          ${p.fantasma?`<button class="btn sm danger" onclick="encerrarFantasma('${p.c.id}')">Encerrar (ex-inquilino)</button>`:
+            `<button class="btn sm sec" onclick="baixarComp('${p.c.id}','${ym}')">Baixar</button>
+             <button class="btn sm danger" onclick="encerrar('${p.c.id}')">Encerrar</button>`}</div></div>
       </div>`).join("") : `<p class="muted" style="padding:8px 0">Nenhuma pendência neste mês. 🎉</p>`}
   </div>
   ${cobPend.length?`<div class="card">
