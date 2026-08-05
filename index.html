@@ -232,10 +232,11 @@ function render(){
   else if(view.name==="casas") renderCasas();
   else if(view.name==="unidade") renderUnidade(view.unidadeId);
   else if(view.name==="despesas") renderDespesas();
+  else if(view.name==="relatorio") renderRelatorio();
 }
 function nav(){
   const b=(n,ic,l)=>`<button class="${view.name===n?'on':''}" onclick="go('${n}')"><span class="ic">${ic}</span>${l}</button>`;
-  return `<nav>${b("home","📊","Início")}${b("casas","🏘️","Casas")}${b("despesas","💸","Despesas")}</nav>`;
+  return `<nav>${b("home","📊","Início")}${b("casas","🏘️","Casas")}${b("despesas","💸","Despesas")}${b("relatorio","📄","Relatório")}</nav>`;
 }
 window.go = n => { view={name:n}; render(); window.scrollTo(0,0); };
 window.abrirUnidade = id => { view={name:"unidade",unidadeId:id}; render(); window.scrollTo(0,0); };
@@ -364,6 +365,7 @@ async function renderUnidade(uId){
       <div class="row" style="margin-top:12px;flex-wrap:wrap">
         <button class="btn sm sec" onclick="reajustar('${c.id}')">Reajustar valor</button>
         <button class="btn sm sec" onclick="mudarVenc('${c.id}')">Mudar vencimento</button>
+        <button class="btn sm sec" onclick="transferir('${c.id}')">Transferir de kitnet</button>
         <button class="btn sm danger" onclick="encerrar('${c.id}')">Encerrar contrato</button>
       </div>
     </div>
@@ -582,6 +584,51 @@ function comprimir(file){
   });
 }
 
+/* ---------- TRANSFERIR INQUILINO DE KITNET ---------- */
+window.transferir = cId => {
+  const c=contratos.find(x=>x.id===cId);
+  const uAtual=unidades.find(u=>u.id===c.unidadeId);
+  // unidades vagas (sem contrato ativo), exceto a atual
+  const vagas=unidades.filter(u=>u.id!==c.unidadeId && !contratoAtivoDa(u.id));
+  if(!vagas.length){ alert("Não há nenhuma kitnet vaga para transferir. Encerre ou libere uma unidade primeiro."); return; }
+  const opts=casas.map(cs=>{
+    const us=vagas.filter(u=>u.casaId===cs.id);
+    return us.length ? `<optgroup label="${esc(cs.nome)}">${us.map(u=>`<option value="${u.id}">${esc(u.nome)}</option>`).join("")}</optgroup>` : "";
+  }).join("");
+  openModal(`<h3>Transferir de kitnet</h3>
+    <p class="muted">${esc(c.nome)} está em <b>${esc(uAtual?.nome||"?")}</b>. O histórico de aluguéis fica preservado nesta kitnet; um novo contrato começa na kitnet de destino, mantendo nome, telefone, documentos e o valor atual (${fmt(valorVigente(c,ymAtual()))}).</p>
+    <label>Nova kitnet</label><select id="f-dest">${opts}</select>
+    <label>Data da mudança</label><input id="f-mud" type="date" value="${hoje()}">
+    <label>Valor do aluguel na nova kitnet (R$)</label><input id="f-val" type="number" step="0.01" value="${valorVigente(c,ymAtual())}">
+    <label>Dia do vencimento</label><input id="f-dia" type="number" min="1" max="31" value="${c.diaVenc}">
+    <div class="mAct"><button class="btn sec" onclick="closeModal()">Cancelar</button>
+    <button class="btn" onclick="confTransferir('${cId}')">Transferir</button></div>`);
+};
+window.confTransferir = async cId => {
+  const c=contratos.find(x=>x.id===cId);
+  const destId=$("#f-dest").value, mud=$("#f-mud").value||hoje();
+  const val=parseFloat($("#f-val").value)||valorVigente(c,ymAtual());
+  const dia=+$("#f-dia").value||c.diaVenc;
+  if(!destId){ alert("Escolha a kitnet de destino."); return; }
+  const uDest=unidades.find(u=>u.id===destId);
+  // 1) encerra o contrato atual na data da mudança
+  await updateDoc(doc(db,"contratos",cId),{ativo:false,dataSaida:mud,motivoSaida:`Transferido para ${uDest.nome}`});
+  // 2) abre novo contrato na kitnet de destino, herdando os dados do inquilino
+  const novo=await addDoc(collection(db,"contratos"),{
+    unidadeId:destId, casaId:uDest.casaId, nome:c.nome, telefone:c.telefone||"",
+    trabalho:c.trabalho||"", obs:c.obs||"", dataEntrada:mud, diaVenc:dia,
+    valores:[{valor:val,desde:mud}], ajustes:[], ativo:true,
+    transferidoDe:c.unidadeId, contratoAnterior:cId
+  });
+  // 3) copia os documentos anexados para o novo contrato
+  try{
+    const snap=await getDocs(query(collection(db,"documentos"),where("contratoId","==",cId)));
+    for(const d of snap.docs){ const x=d.data(); await addDoc(collection(db,"documentos"),{contratoId:novo.id,nome:x.nome,data:x.data,base64:x.base64}); }
+  }catch(e){}
+  closeModal();
+  abrirUnidade(destId);
+};
+
 /* ---------- DESPESAS ---------- */
 const TIPO_DESP={agua:"💧 Água",energia:"⚡ Energia",reparo:"🔧 Reparo",outro:"📦 Outro"};
 function renderDespesas(){
@@ -706,6 +753,133 @@ window.salvarEditDesp = async id => {
   closeModal();
 };
 window.delDesp = async id => { if(confirm("Excluir esta despesa?")) await deleteDoc(doc(db,"despesas",id)); };
+
+/* ---------- RELATÓRIO ---------- */
+function dadosRelatorio(ym){
+  const ativosNoMes=contratos.filter(c=>contratoNoMes(c,ym));
+  const porCasa={};
+  for(const cs of casas) porCasa[cs.id]={casa:cs,previsto:0,recebido:0,atraso:0,despesa:0,linhas:[],ocup:0,total:0};
+  for(const u of unidades){ if(porCasa[u.casaId]) porCasa[u.casaId].total++; }
+  let previsto=0,recebido=0,atraso=0,despTot=0;
+  for(const c of ativosNoMes){
+    const u=unidades.find(x=>x.id===c.unidadeId); if(!u||!porCasa[u.casaId]) continue;
+    const dev=devidoComp(c,ym), pg=pagoComp(c.id,ym), falta=Math.max(0,dev-pg);
+    const venceu=vencComp(c,ym)<hoje();
+    const st=statusComp(c,ym);
+    const b=porCasa[u.casaId];
+    b.previsto+=dev; b.recebido+=pg; if(venceu) b.atraso+=falta; b.ocup++;
+    b.linhas.push({unidade:u.nome,inquilino:c.nome,dev,pg,falta,st});
+    previsto+=dev; recebido+=pg; if(venceu) atraso+=falta;
+  }
+  const despLista=despesas.filter(d=>ymDe(vencDesp(d))===ym);
+  for(const d of despLista){ if(porCasa[d.casaId]){ porCasa[d.casaId].despesa+=Number(d.valor); } despTot+=Number(d.valor); }
+  return {ym,porCasa:Object.values(porCasa),previsto,recebido,atraso,despTot,liq:recebido-despTot,despLista};
+}
+
+function renderRelatorio(){
+  const ym=mesSel; const r=dadosRelatorio(ym);
+  const totU=unidades.length, ocupadas=r.porCasa.reduce((s,b)=>s+b.ocup,0);
+  app.innerHTML=`
+  <div class="hdr"><div><div class="sub">Prestação de contas</div><h1>Relatório</h1></div></div>
+  <div class="mSel"><button onclick="mudaMes(-1)">‹</button><div class="lbl">${ymLabel(ym)}</div><button onclick="mudaMes(1)">›</button></div>
+  <div class="card">
+    <p class="muted">Gere a prestação de contas de <b>${ymLabel(ym)}</b> para entregar ao proprietário.</p>
+    <div class="row" style="margin-top:12px;flex-wrap:wrap">
+      <button class="btn" onclick="imprimirRelatorio('${ym}')">🖨️ Ver / Imprimir (PDF)</button>
+      <button class="btn sec" onclick="baixarRelatorio('${ym}')">⬇️ Baixar p/ WhatsApp</button>
+    </div>
+    <p class="hint">No "Imprimir", escolha <b>Salvar como PDF</b> no destino para gerar o arquivo. O botão de baixar gera um resumo em texto pronto pra colar/enviar.</p>
+  </div>
+  <div class="kgrid">
+    <div class="kpi"><div class="l">Ocupação</div><div class="v">${totU?Math.round(100*ocupadas/totU):0}%</div><div class="muted">${ocupadas} de ${totU}</div></div>
+    <div class="kpi"><div class="l">Recebido</div><div class="v" style="color:var(--green)">${fmt(r.recebido)}</div><div class="muted">de ${fmt(r.previsto)} previstos</div></div>
+    <div class="kpi"><div class="l">Despesas</div><div class="v" style="color:var(--amber)">${fmt(r.despTot)}</div></div>
+    <div class="kpi"><div class="l">Em atraso</div><div class="v" style="color:${r.atraso>0?'var(--red)':'var(--ink)'}">${fmt(r.atraso)}</div></div>
+    <div class="kpi liq"><div class="l">Resultado (recebido − despesas)</div><div class="v" style="color:${r.liq>=0?'var(--green)':'var(--red)'}">${fmt(r.liq)}</div></div>
+  </div>
+  ${r.porCasa.map(b=>`<div class="card">
+    <div class="spread"><h3 class="disp" style="font-size:15.5px">${esc(b.casa.nome)}</h3><b>${fmt(b.recebido-b.despesa)}</b></div>
+    <p class="muted">ocupadas ${b.ocup}/${b.total} · recebido ${fmt(b.recebido)} · despesas ${fmt(b.despesa)}${b.atraso>0.005?` · <span style="color:var(--red)">atraso ${fmt(b.atraso)}</span>`:""}</p>
+    ${b.linhas.map(l=>`<div class="compRow"><div><b>${esc(l.unidade)}</b> <span class="muted">${esc(l.inquilino)}</span></div>
+      <div class="row">${stTag(l.st)}<b>${fmt(l.pg)}</b></div></div>`).join("")||`<p class="muted" style="padding:6px 0">Sem inquilinos ativos.</p>`}
+  </div>`).join("")}
+  ${nav()}`;
+}
+
+function htmlRelatorio(ym){
+  const r=dadosRelatorio(ym);
+  const totU=unidades.length, ocupadas=r.porCasa.reduce((s,b)=>s+b.ocup,0);
+  const hj=new Date().toLocaleDateString("pt-BR");
+  const stTxt={pago:"Pago",parcial:"Parcial",aberto:"Em aberto",atrasado:"Atrasado"};
+  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Relatório ${ymLabel(ym)}</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font:13px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;color:#22261F;padding:32px;max-width:800px;margin:0 auto}
+    h1{font-size:22px;margin-bottom:2px} .sub{color:#7C8074;font-size:12px;margin-bottom:20px}
+    h2{font-size:15px;margin:22px 0 8px;padding-bottom:5px;border-bottom:2px solid #2E6B46;color:#2E6B46}
+    table{width:100%;border-collapse:collapse;margin-bottom:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #E5E3D9}
+    th{font-size:11px;text-transform:uppercase;color:#7C8074;letter-spacing:.04em}
+    td.n,th.n{text-align:right} .tot{font-weight:700}
+    .cards{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+    .c{border:1px solid #E5E3D9;border-radius:10px;padding:10px 14px;flex:1;min-width:120px}
+    .c .l{font-size:10px;text-transform:uppercase;color:#7C8074;letter-spacing:.04em} .c .v{font-size:18px;font-weight:700;margin-top:2px}
+    .liq{background:#E2EFE6;border-color:#2E6B46}
+    .foot{margin-top:30px;font-size:11px;color:#7C8074;border-top:1px solid #E5E3D9;padding-top:10px}
+    .g{color:#2E6B46} .a{color:#A26714} .r{color:#B23E2C}
+    @media print{body{padding:12px}.noprint{display:none}}
+  </style></head><body>
+  <h1>Prestação de Contas — Aluguéis</h1>
+  <div class="sub">Competência: ${ymLabel(ym)} · Emitido em ${hj}</div>
+  <div class="cards">
+    <div class="c"><div class="l">Ocupação</div><div class="v">${totU?Math.round(100*ocupadas/totU):0}% <span style="font-size:11px;font-weight:400;color:#7C8074">(${ocupadas}/${totU})</span></div></div>
+    <div class="c"><div class="l">Previsto</div><div class="v">${fmt(r.previsto)}</div></div>
+    <div class="c"><div class="l">Recebido</div><div class="v g">${fmt(r.recebido)}</div></div>
+    <div class="c"><div class="l">Despesas</div><div class="v a">${fmt(r.despTot)}</div></div>
+    <div class="c liq"><div class="l">Resultado líquido</div><div class="v ${r.liq>=0?'g':'r'}">${fmt(r.liq)}</div></div>
+  </div>
+  ${r.porCasa.map(b=>`
+    <h2>${b.casa.nome} — líquido ${fmt(b.recebido-b.despesa)}</h2>
+    <table><thead><tr><th>Kitnet</th><th>Inquilino</th><th class="n">Devido</th><th class="n">Pago</th><th class="n">Falta</th><th>Status</th></tr></thead>
+    <tbody>${b.linhas.map(l=>`<tr><td>${esc(l.unidade)}</td><td>${esc(l.inquilino)}</td><td class="n">${fmt(l.dev)}</td><td class="n">${fmt(l.pg)}</td><td class="n">${l.falta>0.005?fmt(l.falta):"—"}</td><td>${stTxt[l.st]}</td></tr>`).join("")||`<tr><td colspan="6" style="color:#7C8074">Sem inquilinos ativos</td></tr>`}
+    <tr class="tot"><td colspan="2">Subtotal recebido</td><td class="n">${fmt(b.previsto)}</td><td class="n">${fmt(b.recebido)}</td><td class="n">${fmt(b.atraso>0?b.atraso:0)}</td><td></td></tr>
+    </tbody></table>
+    <div style="font-size:12px;color:#7C8074;margin-bottom:4px">Despesas da casa (água/energia/reparos): <b class="a">${fmt(b.despesa)}</b></div>
+  `).join("")}
+  ${r.despLista.length?`<h2>Detalhe das despesas</h2>
+    <table><thead><tr><th>Casa</th><th>Tipo</th><th>Descrição</th><th class="n">Valor</th><th>Situação</th></tr></thead>
+    <tbody>${r.despLista.map(d=>{const cs=casas.find(c=>c.id===d.casaId);return `<tr><td>${esc(cs?.nome||"?")}</td><td>${(TIPO_DESP[d.tipo]||d.tipo).replace(/[^ -~À-ÿ]/g,"").trim()}</td><td>${esc(d.descricao||"—")}</td><td class="n">${fmt(d.valor)}</td><td>${d.pagamento?"Paga":"Em aberto"}</td></tr>`;}).join("")}</tbody></table>`:""}
+  <div class="foot">Relatório gerado pelo sistema de gestão de kitnets · ${hj}</div>
+  <div class="noprint" style="margin-top:20px;text-align:center"><button onclick="window.print()" style="padding:10px 20px;background:#2E6B46;color:#fff;border:none;border-radius:8px;font-size:14px;cursor:pointer">🖨️ Imprimir / Salvar PDF</button></div>
+  </body></html>`;
+}
+window.imprimirRelatorio = ym => {
+  const w=window.open("","_blank");
+  if(!w){ alert("Permita pop-ups para abrir o relatório."); return; }
+  w.document.write(htmlRelatorio(ym)); w.document.close();
+};
+window.baixarRelatorio = ym => {
+  const r=dadosRelatorio(ym);
+  const totU=unidades.length, ocupadas=r.porCasa.reduce((s,b)=>s+b.ocup,0);
+  let t=`*PRESTAÇÃO DE CONTAS — ${ymLabel(ym).toUpperCase()}*\n\n`;
+  t+=`📊 Ocupação: ${totU?Math.round(100*ocupadas/totU):0}% (${ocupadas}/${totU})\n`;
+  t+=`💰 Recebido: ${fmt(r.recebido)} de ${fmt(r.previsto)}\n`;
+  t+=`💸 Despesas: ${fmt(r.despTot)}\n`;
+  if(r.atraso>0.005) t+=`🔴 Em atraso: ${fmt(r.atraso)}\n`;
+  t+=`\n*RESULTADO LÍQUIDO: ${fmt(r.liq)}*\n`;
+  t+=`\n————————————\n`;
+  for(const b of r.porCasa){
+    t+=`\n*${b.casa.nome}* — líquido ${fmt(b.recebido-b.despesa)}\n`;
+    for(const l of b.linhas){
+      const emoji=l.st==="pago"?"✅":l.st==="atrasado"?"🔴":l.st==="parcial"?"🟡":"⬜";
+      t+=`${emoji} ${l.unidade} (${l.inquilino}): ${fmt(l.pg)}${l.falta>0.005?` · falta ${fmt(l.falta)}`:""}\n`;
+    }
+    if(b.despesa>0) t+=`   despesas: ${fmt(b.despesa)}\n`;
+  }
+  t+=`\n_Emitido em ${new Date().toLocaleDateString("pt-BR")}_`;
+  const blob=new Blob([t],{type:"text/plain;charset=utf-8"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+  a.download=`relatorio-kitnets-${ym}.txt`; a.click();
+};
 </script>
 </body>
 </html>
