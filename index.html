@@ -195,12 +195,14 @@ function valorVigente(c, ym){
   return Number(v);
 }
 function devidoComp(c, ym){
+  if((c.baixados||[]).includes(ym)) return 0; // mês baixado sem cobrança
   const aj = (c.ajustes||[]).filter(a=>a.comp===ym).reduce((s,a)=>s+Number(a.valor),0);
   return valorVigente(c,ym) + aj;
 }
 const pagoComp = (cId, ym) => pagamentos.filter(p=>p.contratoId===cId && p.comp===ym).reduce((s,p)=>s+Number(p.valor),0);
 function vencComp(c, ym){ return `${ym}-${pad(Math.min(c.diaVenc, diasNoMes(ym)))}`; }
 function statusComp(c, ym){
+  if((c.baixados||[]).includes(ym)) return "baixado";
   const dev=devidoComp(c,ym), pg=pagoComp(c.id,ym);
   if(dev<=0) return "pago";
   if(pg>=dev-0.005) return "pago";
@@ -208,7 +210,7 @@ function statusComp(c, ym){
   if(pg>0) return venceu ? "atrasado" : "parcial";
   return venceu ? "atrasado" : "aberto";
 }
-const stTag = s => ({pago:'<span class="tag t-pago">Pago</span>',parcial:'<span class="tag t-parcial">Parcial</span>',aberto:'<span class="tag t-aberto">Em aberto</span>',atrasado:'<span class="tag t-atrasado">Atrasado</span>'}[s]);
+const stTag = s => ({pago:'<span class="tag t-pago">Pago</span>',parcial:'<span class="tag t-parcial">Parcial</span>',aberto:'<span class="tag t-aberto">Em aberto</span>',atrasado:'<span class="tag t-atrasado">Atrasado</span>',baixado:'<span class="tag t-vaga">Baixado</span>'}[s]);
 
 /* despesas: vencimento/pagamento */
 const vencDesp = d => d.vencimento || d.data || hoje();
@@ -281,7 +283,9 @@ function renderHome(){
       const venceu = vencComp(c,ym) < hoje();
       if(venceu) atrasado+=falta;
       const u=unidades.find(x=>x.id===c.unidadeId);
-      pend.push({c,u,falta,venceu,dev,pg});
+      // contrato fantasma: ativo, mas existe outro contrato ativo mais recente na mesma kitnet
+      const outroMaisRecente = contratos.some(o=>o.id!==c.id && o.unidadeId===c.unidadeId && o.ativo && o.dataEntrada>c.dataEntrada);
+      pend.push({c,u,falta,venceu,dev,pg,fantasma:c.ativo&&outroMaisRecente});
     }
   }
   const despLista = despesas.filter(d=>ymDe(vencDesp(d))===ym);
@@ -328,9 +332,12 @@ function renderHome(){
   <div class="card">
     <div class="spread"><h3 class="disp" style="font-size:15.5px">Pendências de ${ymLabel(ym)}</h3></div>
     ${pend.length ? pend.map(p=>`
-      <div class="pend" onclick="abrirUnidade('${p.u?.id}')" style="cursor:pointer">
-        <div><b>${esc(p.c.nome)}</b><div class="muted">${esc(p.u?.nome||"?")} · venc. dia ${p.c.diaVenc} · pagou ${fmt(p.pg)} de ${fmt(p.dev)}</div></div>
-        <div style="text-align:right"><b style="color:${p.venceu?'var(--red)':'var(--amber)'}">${fmt(p.falta)}</b><div>${p.venceu?'<span class="tag t-atrasado">Atrasado</span>':'<span class="tag t-aberto">A vencer</span>'}</div></div>
+      <div class="pend">
+        <div onclick="abrirUnidade('${p.u?.id}')" style="cursor:pointer;flex:1"><b>${esc(p.c.nome)}</b><div class="muted">${esc(p.u?.nome||"?")} · venc. dia ${p.c.diaVenc} · pagou ${fmt(p.pg)} de ${fmt(p.dev)}</div></div>
+        <div style="text-align:right"><b style="color:${p.venceu?'var(--red)':'var(--amber)'}">${fmt(p.falta)}</b>
+          <div>${p.venceu?'<span class="tag t-atrasado">Atrasado</span>':'<span class="tag t-aberto">A vencer</span>'}</div>
+          ${p.fantasma?`<button class="btn sm danger" style="margin-top:4px" onclick="encerrarFantasma('${p.c.id}')">Encerrar (ex-inquilino)</button>`:
+            (p.venceu?`<button class="btn sm sec" style="margin-top:4px" onclick="baixarComp('${p.c.id}','${ym}')">Baixar</button>`:"")}</div>
       </div>`).join("") : `<p class="muted" style="padding:8px 0">Nenhuma pendência neste mês. 🎉</p>`}
   </div>
   ${cobPend.length?`<div class="card">
@@ -471,13 +478,16 @@ async function renderUnidade(uId){
         const dev=devidoComp(c,ym), pg=pagoComp(c.id,ym), st=statusComp(c,ym);
         const pgs = pagamentos.filter(p=>p.contratoId===c.id&&p.comp===ym).sort((a,b)=>a.data.localeCompare(b.data));
         const aj = (c.ajustes||[]).filter(a=>a.comp===ym);
+        const baixado = (c.baixados||[]).includes(ym);
         return `<div class="compRow" style="flex-direction:column;align-items:stretch">
           <div class="spread">
-            <div><b>${ymLabel(ym)}</b><div class="muted">venc. ${dBr(vencComp(c,ym))} · ${fmt(pg)} de ${fmt(dev)}${dev-pg>0.005?` · falta <b>${fmt(dev-pg)}</b>`:""}</div></div>
-            <div class="row">${stTag(st)}<button class="btn sm" onclick="regPag('${c.id}','${ym}')">＋ pagar</button></div>
+            <div><b>${ymLabel(ym)}</b><div class="muted">venc. ${dBr(vencComp(c,ym))} · ${baixado?"baixado sem cobrança":`${fmt(pg)} de ${fmt(dev)}${dev-pg>0.005?` · falta <b>${fmt(dev-pg)}</b>`:""}`}</div></div>
+            <div class="row">${stTag(st)}${baixado?"":`<button class="btn sm" onclick="regPag('${c.id}','${ym}')">＋ pagar</button>`}</div>
           </div>
           ${aj.map(a=>`<div class="muted" style="margin-top:4px">⚙️ Ajuste ${fmt(a.valor)} — ${esc(a.motivo||"")}</div>`).join("")}
           ${pgs.map(p=>`<div class="muted spread" style="margin-top:4px"><span>💵 ${dBr(p.data)} — ${fmt(p.valor)}${p.obs?` · ${esc(p.obs)}`:""}</span><span class="row"><button class="iconb" onclick="editPag('${p.id}')">✎</button><button class="iconb" onclick="delPag('${p.id}')">🗑</button></span></div>`).join("")}
+          ${dev-pg>0.005 && !baixado ? `<button class="btn sm sec" style="margin-top:6px;align-self:flex-start" onclick="baixarComp('${c.id}','${ym}')">Baixar sem cobrar</button>` : ""}
+          ${baixado ? `<button class="btn sm sec" style="margin-top:6px;align-self:flex-start" onclick="reabrirComp('${c.id}','${ym}')">Reabrir cobrança</button>` : ""}
         </div>`;
       }).join("")}
     </div>
@@ -593,6 +603,40 @@ window.editPag = id => {
 window.salvarEditPag = async id => {
   const val=parseFloat($("#f-val").value); if(!val){ alert("Informe o valor."); return; }
   await updateDoc(doc(db,"pagamentos",id),{data:$("#f-data").value||hoje(),valor:val,obs:$("#f-obs").value.trim()});
+  closeModal();
+};
+window.baixarComp = async (cId,ym) => {
+  if(!confirm(`Baixar ${ymLabel(ym)} sem cobrança? O mês sai das pendências e do saldo devedor. O histórico registra que foi baixado.`)) return;
+  const c=contratos.find(x=>x.id===cId);
+  await updateDoc(doc(db,"contratos",cId),{baixados:[...(c.baixados||[]),ym]});
+};
+window.reabrirComp = async (cId,ym) => {
+  const c=contratos.find(x=>x.id===cId);
+  await updateDoc(doc(db,"contratos",cId),{baixados:(c.baixados||[]).filter(x=>x!==ym)});
+};
+window.encerrarFantasma = cId => {
+  const c=contratos.find(x=>x.id===cId);
+  openModal(`<h3>Encerrar contrato antigo</h3>
+    <p class="muted">${esc(c.nome)} continua marcado como ativo, por isso ainda gera cobrança todo mês. Informe quando essa pessoa saiu, para parar as cobranças a partir daí.</p>
+    <label>Data de saída</label><input id="f-saida" type="date" value="${c.dataEntrada}">
+    <label class="row" style="margin-top:12px"><input type="checkbox" id="f-limpar" checked style="width:auto"> baixar também os aluguéis em aberto que sobraram (não vou cobrar)</label>
+    <div class="mAct"><button class="btn sec" onclick="closeModal()">Cancelar</button>
+    <button class="btn danger" style="background:var(--red);color:#fff" onclick="confEncerrarFantasma('${cId}')">Encerrar</button></div>`);
+};
+window.confEncerrarFantasma = async cId => {
+  const c=contratos.find(x=>x.id===cId);
+  const saida=$("#f-saida").value||c.dataEntrada;
+  const upd={ativo:false, dataSaida:saida};
+  if($("#f-limpar").checked){
+    // baixa todas as competências ainda em aberto
+    const baix=[...(c.baixados||[])];
+    for(const ym of compsDo(c)){
+      const falta=Math.max(0, devidoComp(c,ym)-pagoComp(c.id,ym));
+      if(falta>0.005 && !baix.includes(ym)) baix.push(ym);
+    }
+    upd.baixados=baix;
+  }
+  await updateDoc(doc(db,"contratos",cId),upd);
   closeModal();
 };
 
