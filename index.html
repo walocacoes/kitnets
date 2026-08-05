@@ -227,6 +227,21 @@ function compsDo(c){
   return out.reverse();
 }
 function mesesEntre(d1,d2){ const [y1,m1]=d1.split("-").map(Number),[y2,m2]=d2.split("-").map(Number); return Math.max(0,(y2-y1)*12+(m2-m1)); }
+function diffDias(d1,d2){ return Math.round((new Date(d2)-new Date(d1))/86400000); }
+// pró-rata da saída: dias do último vencimento (<= saída) até a data de saída
+function proRataSaida(c, dataSaida){
+  const dia=Math.min(c.diaVenc, diasNoMes(ymDe(dataSaida)));
+  // último vencimento igual ou anterior à saída
+  let venc=`${ymDe(dataSaida)}-${pad(dia)}`;
+  if(venc>dataSaida){ // ainda não venceu neste mês; usa o vencimento do mês anterior
+    const ymAnt=ymAdd(ymDe(dataSaida),-1);
+    venc=`${ymAnt}-${pad(Math.min(c.diaVenc,diasNoMes(ymAnt)))}`;
+  }
+  const dias=Math.max(0, diffDias(venc, dataSaida));
+  const val=valorVigente(c, ymDe(dataSaida));
+  const diaria=val/30;
+  return {dias, diaria, valor:+(dias*diaria).toFixed(2), venc, compSaida:ymDe(dataSaida)};
+}
 
 /* ---------- cobranças avulsas (por inquilino) ---------- */
 const cobrancasDe = cId => cobrancas.filter(x=>x.contratoId===cId);
@@ -337,7 +352,7 @@ function renderHome(){
         <div style="text-align:right"><b style="color:${p.venceu?'var(--red)':'var(--amber)'}">${fmt(p.falta)}</b>
           <div>${p.venceu?'<span class="tag t-atrasado">Atrasado</span>':'<span class="tag t-aberto">A vencer</span>'}</div>
           ${p.fantasma?`<button class="btn sm danger" style="margin-top:4px" onclick="encerrarFantasma('${p.c.id}')">Encerrar (ex-inquilino)</button>`:
-            (p.venceu?`<button class="btn sm sec" style="margin-top:4px" onclick="baixarComp('${p.c.id}','${ym}')">Baixar</button>`:"")}</div>
+            `<button class="btn sm sec" style="margin-top:4px" onclick="baixarComp('${p.c.id}','${ym}')">Baixar</button>`}</div>
       </div>`).join("") : `<p class="muted" style="padding:8px 0">Nenhuma pendência neste mês. 🎉</p>`}
   </div>
   ${cobPend.length?`<div class="card">
@@ -519,8 +534,34 @@ async function renderUnidade(uId){
   <div class="hdr"><div><div class="sub">${esc(cs?.nome||"")}</div><h1>${esc(u.nome)}</h1></div>
     ${c?"":""}</div>
   ${corpo}
-  ${antigos.length?`<div class="card"><h3 class="disp" style="font-size:15.5px">Inquilinos anteriores</h3>
-    ${antigos.map(a=>`<div class="compRow"><div><b>${esc(a.nome)}</b><div class="muted">${dBr(a.dataEntrada)} → ${dBr(a.dataSaida)}</div></div></div>`).join("")}</div>`:""}
+  ${antigos.length?`<div class="card"><h3 class="disp" style="font-size:15.5px;margin-bottom:6px">Inquilinos anteriores</h3>
+    ${antigos.map(a=>{
+      const sd=saldoDevedor(a);
+      return `<details style="border-bottom:1px solid var(--line);padding:8px 0">
+        <summary style="cursor:pointer;list-style:none" class="spread">
+          <div><b>${esc(a.nome)}</b><div class="muted">${dBr(a.dataEntrada)} → ${dBr(a.dataSaida)}</div></div>
+          <div style="text-align:right">${sd.total>0.005?`<b style="color:var(--red)">deve ${fmt(sd.total)}</b>`:`<span class="tag t-pago">quitado</span>`}<div class="muted" style="font-size:11px">toque p/ ver ▾</div></div>
+        </summary>
+        <div style="margin-top:8px">
+          ${compsDo(a).map(ym=>{
+            const dev=devidoComp(a,ym), pg=pagoComp(a.id,ym), st=statusComp(a,ym);
+            const baixado=(a.baixados||[]).includes(ym);
+            const pgs=pagamentos.filter(p=>p.contratoId===a.id&&p.comp===ym).sort((x,y)=>x.data.localeCompare(y.data));
+            return `<div class="compRow" style="flex-direction:column;align-items:stretch">
+              <div class="spread">
+                <div><b>${ymLabel(ym)}</b><div class="muted">${baixado?"baixado sem cobrança":`${fmt(pg)} de ${fmt(dev)}${dev-pg>0.005?` · falta <b>${fmt(dev-pg)}</b>`:""}`}</div></div>
+                <div class="row">${stTag(st)}${baixado?"":`<button class="btn sm" onclick="regPag('${a.id}','${ym}')">＋ pagar</button>`}</div>
+              </div>
+              ${pgs.map(p=>`<div class="muted spread" style="margin-top:4px"><span>💵 ${dBr(p.data)} — ${fmt(p.valor)}${p.obs?` · ${esc(p.obs)}`:""}</span><span class="row"><button class="iconb" onclick="editPag('${p.id}')">✎</button><button class="iconb" onclick="delPag('${p.id}')">🗑</button></span></div>`).join("")}
+              ${dev-pg>0.005&&!baixado?`<button class="btn sm sec" style="margin-top:6px;align-self:flex-start" onclick="baixarComp('${a.id}','${ym}')">Baixar sem cobrar</button>`:""}
+              ${baixado?`<button class="btn sm sec" style="margin-top:6px;align-self:flex-start" onclick="reabrirComp('${a.id}','${ym}')">Reabrir cobrança</button>`:""}
+            </div>`;
+          }).join("")}
+          ${cobrancasDe(a.id).length?`<div style="margin-top:8px"><b class="muted">Cobranças avulsas</b>
+            ${cobrancasDe(a.id).map(cob=>{const f=faltaCob(cob),pg=pagoCob(cob);return `<div class="compRow"><div><b>${TIPO_COB[cob.tipo]||cob.tipo}</b>${cob.descricao?` · ${esc(cob.descricao)}`:""}<div class="muted">${fmt(pg)} de ${fmt(cob.valor)}${f>0.005?` · falta ${fmt(f)}`:""}</div></div><div class="row">${stTag(statusCob(cob))}${f>0.005?`<button class="btn sm" onclick="pagarCob('${cob.id}')">＋ pagar</button>`:""}</div></div>`;}).join("")}</div>`:""}
+        </div>
+      </details>`;
+    }).join("")}</div>`:""}
   ${nav()}`;
 
   if(c) carregarDocs(c.id);
@@ -759,13 +800,61 @@ window.salvarVenc = async cId => {
 };
 
 window.encerrar = cId => {
+  const c=contratos.find(x=>x.id===cId);
   openModal(`<h3>Encerrar contrato</h3><p class="muted">A kitnet fica vaga e todo o histórico é preservado.</p>
-    <label>Data de saída</label><input id="f-saida" type="date" value="${hoje()}">
+    <label>Data de saída</label><input id="f-saida" type="date" value="${hoje()}" onchange="calcSaida('${cId}')">
+    <div id="saida-out" style="margin-top:12px"></div>
     <div class="mAct"><button class="btn sec" onclick="closeModal()">Cancelar</button>
     <button class="btn danger" style="background:var(--red);color:#fff" onclick="confEncerrar('${cId}')">Encerrar</button></div>`);
+  calcSaida(cId);
 };
+window.calcSaida = cId => {
+  const c=contratos.find(x=>x.id===cId);
+  const saida=$("#f-saida").value; const out=$("#saida-out"); if(!out) return;
+  if(!saida){ out.innerHTML=""; return; }
+  const compSaida=ymDe(saida);
+  const pr=proRataSaida(c, saida);
+  const jaPago=pagoComp(c.id, compSaida);
+  const devMesCheio=devidoComp(c, compSaida);
+  // saldo devedor de meses ANTERIORES ao mês de saída
+  let anterior=0;
+  for(const ym of compsDo(c)){ if(ym<compSaida) anterior+=Math.max(0, devidoComp(c,ym)-pagoComp(c.id,ym)); }
+  out.innerHTML=`
+    ${anterior>0.005?`<div class="muted" style="margin-bottom:8px">⚠️ Há <b>${fmt(anterior)}</b> em aberto de meses anteriores. Trate esses meses na ficha (pagar ou baixar) separadamente.</div>`:""}
+    <label style="margin-top:0">No mês da saída (${ymLabel(compSaida)}), como cobrar?</label>
+    <label class="row" style="font-weight:400;margin:6px 0"><input type="radio" name="modo-saida" value="prorata" checked style="width:auto;margin-right:8px" onchange="pintaProRata()">
+      <span>Proporcional aos dias — <b>${pr.dias} dia(s)</b> desde o venc. ${dBr(pr.venc)} = <b style="color:var(--green)">${fmt(pr.valor)}</b>${jaPago>0?` <span class="muted">(já pagou ${fmt(jaPago)})</span>`:""}</span></label>
+    <label class="row" style="font-weight:400;margin:6px 0"><input type="radio" name="modo-saida" value="cheio" style="width:auto;margin-right:8px" onchange="pintaProRata()">
+      <span>Mês cheio — ${fmt(devMesCheio)}</span></label>
+    <label class="row" style="font-weight:400;margin:6px 0"><input type="radio" name="modo-saida" value="baixar" style="width:auto;margin-right:8px" onchange="pintaProRata()">
+      <span>Não vou cobrar — baixar o mês</span></label>`;
+};
+window.pintaProRata = () => {}; // hook para futuros destaques
 window.confEncerrar = async cId => {
-  await updateDoc(doc(db,"contratos",cId),{ativo:false,dataSaida:$("#f-saida").value||hoje()});
+  const c=contratos.find(x=>x.id===cId);
+  const saida=$("#f-saida").value||hoje();
+  const compSaida=ymDe(saida);
+  const modo=(document.querySelector('input[name="modo-saida"]:checked')||{}).value||"cheio";
+  const upd={ativo:false,dataSaida:saida};
+  if(modo==="prorata"){
+    const pr=proRataSaida(c, saida);
+    // marca o mês como baixado (não cobra o cheio) e cria uma cobrança avulsa proporcional
+    upd.baixados=[...(c.baixados||[]), compSaida];
+    await updateDoc(doc(db,"contratos",cId),upd);
+    if(pr.valor>0.005){
+      await addDoc(collection(db,"cobrancas"),{
+        contratoId:cId, tipo:"aluguel",
+        descricao:`Aluguel proporcional à saída (${pr.dias} dias, ${dBr(pr.venc)} a ${dBr(saida)})`,
+        valor:pr.valor, vencimento:saida, pagamentos:[]
+      });
+    }
+    closeModal(); go("casas"); return;
+  }
+  if(modo==="baixar"){
+    upd.baixados=[...(c.baixados||[]), compSaida];
+  }
+  // modo "cheio": não mexe, o mês continua devido normalmente
+  await updateDoc(doc(db,"contratos",cId),upd);
   closeModal(); go("casas");
 };
 
