@@ -1302,10 +1302,18 @@ function dadosRelatorio(ym){
     // cobranças avulsas com vencimento neste mês (ainda em aberto) — detalhadas
     const avulsasMes=cobrancasDe(c.id).filter(cob=>ymDe(cob.vencimento||"")===ym && faltaCob(cob)>0.005);
     const avulsoMes=avulsasMes.reduce((s,cob)=>s+faltaCob(cob),0);
+    // avulsas PAGAS neste mês (qualquer pagamento com data no mês) — entram no "recebido"
+    let avulsoPago=0; const avulsasPagasDet=[];
+    for(const cob of cobrancasDe(c.id)){
+      for(const p of (cob.pagamentos||[])){
+        if(ymDe(p.data||"")===ym){ avulsoPago+=Number(p.valor); avulsasPagasDet.push({tipo:cob.tipo,descricao:cob.descricao,valor:Number(p.valor)}); }
+      }
+    }
     const totalCobrar=falta+atrasadoAnt+avulsoMes;
     const b=porCasa[u.casaId];
     b.previsto+=dev; b.recebido+=pg; if(venceu) b.atraso+=falta; b.ocup++;
-    b.linhas.push({unidade:u.nome,inquilino:c.nome,dev,pg,falta,st,venc:vencComp(c,ym),diaVenc:c.diaVenc,atrasadoAnt,avulsoMes,avulsasMes:avulsasMes.map(x=>({tipo:x.tipo,descricao:x.descricao,valor:faltaCob(x)})),totalCobrar});
+    b.avulsoPago=(b.avulsoPago||0)+avulsoPago;
+    b.linhas.push({unidade:u.nome,inquilino:c.nome,dev,pg,falta,st,venc:vencComp(c,ym),diaVenc:c.diaVenc,atrasadoAnt,avulsoMes,avulsasMes:avulsasMes.map(x=>({tipo:x.tipo,descricao:x.descricao,valor:faltaCob(x)})),avulsoPago,avulsasPagasDet,totalCobrar});
     previsto+=dev; recebido+=pg; if(venceu) atraso+=falta;
   }
   const despLista=despesas.filter(d=>ymDe(vencDesp(d))===ym);
@@ -1313,7 +1321,8 @@ function dadosRelatorio(ym){
   // despesas atrasadas: venceram ANTES deste mês e ainda não foram pagas
   const despAtrasadas=despesas.filter(d=>!d.pagamento && ymDe(vencDesp(d))<ym);
   const despAtrasTot=despAtrasadas.reduce((s,d)=>s+Number(d.valor),0);
-  return {ym,porCasa:Object.values(porCasa),previsto,recebido,atraso,despTot,liq:recebido-despTot,despLista,despAtrasadas,despAtrasTot};
+  const recebidoAvulso=Object.values(porCasa).reduce((s,b)=>s+(b.avulsoPago||0),0);
+  return {ym,porCasa:Object.values(porCasa),previsto,recebido,recebidoAvulso,atraso,despTot,liq:recebido-despTot,despLista,despAtrasadas,despAtrasTot};
 }
 
 function renderRelatorio(){
@@ -1344,7 +1353,7 @@ function renderRelatorio(){
   ${r.porCasa.map(b=>`<div class="card">
     <div class="spread"><h3 class="disp" style="font-size:15.5px">${esc(b.casa.nome)}</h3><b style="color:var(--green)">${fmt(b.recebido)}</b></div>
     <p class="muted">ocupadas ${b.ocup}/${b.total} · recebido ${fmt(b.recebido)} · despesas ${fmt(b.despesa)}${b.atraso>0.005?` · <span style="color:var(--red)">atraso ${fmt(b.atraso)}</span>`:""}</p>
-    ${b.linhas.map(l=>{const outros=l.atrasadoAnt+l.avulsoMes; return `<div class="compRow"><div><b>${esc(l.unidade)}</b> <span class="muted">${esc(l.inquilino)} · venc. dia ${l.diaVenc}</span>${outros>0.005?`<div class="muted">aluguel ${fmt(l.dev)}${l.atrasadoAnt>0.005?` + atrasado ${fmt(l.atrasadoAnt)}`:""}${l.avulsoMes>0.005?` + avulsas ${fmt(l.avulsoMes)}`:""} = <b style="color:var(--red)">cobrar ${fmt(l.totalCobrar)}</b></div>`:""}</div>
+    ${b.linhas.map(l=>{const outros=l.atrasadoAnt+l.avulsoMes; return `<div class="compRow"><div><b>${esc(l.unidade)}</b> <span class="muted">${esc(l.inquilino)} · venc. dia ${l.diaVenc}</span>${l.avulsoPago>0.005?`<div class="muted">✓ avulsas pagas: <b style="color:var(--green)">${fmt(l.avulsoPago)}</b></div>`:""}${outros>0.005?`<div class="muted">aluguel ${fmt(l.dev)}${l.atrasadoAnt>0.005?` + atrasado ${fmt(l.atrasadoAnt)}`:""}${l.avulsoMes>0.005?` + avulsas ${fmt(l.avulsoMes)}`:""} = <b style="color:var(--red)">cobrar ${fmt(l.totalCobrar)}</b></div>`:""}</div>
       <div class="row">${stTag(l.st)}<b>${fmt(l.pg)}</b></div></div>`;}).join("")||`<p class="muted" style="padding:6px 0">Sem inquilinos ativos.</p>`}
   </div>`).join("")}
   ${nav()}`;
@@ -1370,6 +1379,10 @@ function htmlRelatorio(ym){
     .liq{background:#E2EFE6;border-color:#2E6B46}
     .foot{margin-top:30px;font-size:11px;color:#7C8074;border-top:1px solid #E5E3D9;padding-top:10px}
     .g{color:#2E6B46} .a{color:#A26714} .r{color:#B23E2C}
+    .selo{display:inline-block;padding:3px 10px;border-radius:99px;font-size:11px;font-weight:700;white-space:nowrap}
+    .s-pago{background:#E2EFE6;color:#2E6B46} .s-parcial{background:#F7EDDA;color:#A26714}
+    .s-aberto{background:#EEEDE7;color:#7C8074} .s-atrasado{background:#F9E6E1;color:#B23E2C}
+    tbody tr:nth-child(4n+1){background:#FAFAF7}
     @media print{body{padding:12px}.noprint{display:none}}
   </style></head><body>
   <h1>Prestação de Contas — Aluguéis</h1>
@@ -1377,15 +1390,23 @@ function htmlRelatorio(ym){
   <div class="cards">
     <div class="c"><div class="l">Ocupação</div><div class="v">${totU?Math.round(100*ocupadas/totU):0}% <span style="font-size:11px;font-weight:400;color:#7C8074">(${ocupadas}/${totU})</span></div></div>
     <div class="c"><div class="l">Previsto</div><div class="v">${fmt(r.previsto)}</div></div>
-    <div class="c"><div class="l">Recebido</div><div class="v g">${fmt(r.recebido)}</div></div>
+    <div class="c"><div class="l">Recebido aluguéis</div><div class="v g">${fmt(r.recebido)}</div></div>
+    ${r.recebidoAvulso>0.005?`<div class="c"><div class="l">Recebido avulsas</div><div class="v g">${fmt(r.recebidoAvulso)}</div></div>`:""}
     <div class="c"><div class="l">Despesas do mês</div><div class="v a">${fmt(r.despTot)}</div></div>
     ${r.despAtrasTot>0.005?`<div class="c"><div class="l">Despesas atrasadas</div><div class="v a">${fmt(r.despAtrasTot)}</div></div>`:""}
   </div>
   ${r.porCasa.map(b=>`
     <h2>${b.casa.nome} — recebido ${fmt(b.recebido)}</h2>
-    <table><thead><tr><th>Kitnet</th><th>Inquilino</th><th>Vencimento</th><th class="n">Aluguel</th><th class="n">Pago</th><th class="n">Atrasado + avulsas</th><th class="n">Total a cobrar</th><th>Status</th></tr></thead>
-    <tbody>${b.linhas.map(l=>{const outros=l.atrasadoAnt+l.avulsoMes; const detalhe=l.avulsasMes.map(a=>`${(TIPO_COB[a.tipo]||a.tipo).replace(/[^ -~À-ÿ]/g,"").trim()}${a.descricao?` (${esc(a.descricao)})`:""} ${fmt(a.valor)}`).join("; "); return `<tr><td>${esc(l.unidade)}</td><td>${esc(l.inquilino)}</td><td>${dBr(l.venc)}</td><td class="n">${fmt(l.dev)}</td><td class="n">${fmt(l.pg)}</td><td class="n${outros>0.005?' a':''}">${outros>0.005?fmt(outros):"—"}</td><td class="n ${l.totalCobrar>0.005?'r':''}"><b>${l.totalCobrar>0.005?fmt(l.totalCobrar):"—"}</b></td><td>${stTxt[l.st]}</td></tr>${detalhe?`<tr><td></td><td colspan="7" style="font-size:11px;color:#7C8074;padding-top:0">↳ inclui cobranças avulsas: ${detalhe}</td></tr>`:""}`;}).join("")||`<tr><td colspan="8" style="color:#7C8074">Sem inquilinos ativos</td></tr>`}
-    <tr class="tot"><td colspan="3">Subtotal</td><td class="n">${fmt(b.previsto)}</td><td class="n">${fmt(b.recebido)}</td><td class="n a">${fmt(b.linhas.reduce((s,l)=>s+l.atrasadoAnt+l.avulsoMes,0))}</td><td class="n r">${fmt(b.linhas.reduce((s,l)=>s+l.totalCobrar,0))}</td><td></td></tr>
+    <table><thead><tr><th>Kitnet</th><th>Inquilino</th><th>Venc.</th><th class="n">Aluguel</th><th class="n">Pago</th><th class="n">Avulsas pagas</th><th class="n">Atrasado + avulsas</th><th class="n">Total a cobrar</th><th>Status</th></tr></thead>
+    <tbody>${b.linhas.map(l=>{
+      const outros=l.atrasadoAnt+l.avulsoMes;
+      const detCobrar=l.avulsasMes.map(a=>`${(TIPO_COB[a.tipo]||a.tipo).replace(/[^ -~À-ÿ]/g,"").trim()}${a.descricao?` (${esc(a.descricao)})`:""} ${fmt(a.valor)}`).join("; ");
+      const detPagas=l.avulsasPagasDet.map(a=>`${(TIPO_COB[a.tipo]||a.tipo).replace(/[^ -~À-ÿ]/g,"").trim()}${a.descricao?` (${esc(a.descricao)})`:""} ${fmt(a.valor)}`).join("; ");
+      const selo=`<span class="selo s-${l.st}">${stTxt[l.st]}</span>`;
+      const linhaDet=(detCobrar||detPagas)?`<tr><td></td><td colspan="8" style="font-size:11px;color:#7C8074;padding-top:0">${detPagas?`✓ avulsas pagas: ${detPagas}`:""}${detPagas&&detCobrar?" · ":""}${detCobrar?`a cobrar: ${detCobrar}`:""}</td></tr>`:"";
+      return `<tr><td>${esc(l.unidade)}</td><td>${esc(l.inquilino)}</td><td>${dBr(l.venc)}</td><td class="n">${fmt(l.dev)}</td><td class="n g">${fmt(l.pg)}</td><td class="n${l.avulsoPago>0.005?' g':''}">${l.avulsoPago>0.005?fmt(l.avulsoPago):"—"}</td><td class="n${outros>0.005?' a':''}">${outros>0.005?fmt(outros):"—"}</td><td class="n ${l.totalCobrar>0.005?'r':''}"><b>${l.totalCobrar>0.005?fmt(l.totalCobrar):"—"}</b></td><td>${selo}</td></tr>${linhaDet}`;
+    }).join("")||`<tr><td colspan="9" style="color:#7C8074">Sem inquilinos ativos</td></tr>`}
+    <tr class="tot"><td colspan="3">Subtotal</td><td class="n">${fmt(b.previsto)}</td><td class="n g">${fmt(b.recebido)}</td><td class="n g">${fmt(b.avulsoPago||0)}</td><td class="n a">${fmt(b.linhas.reduce((s,l)=>s+l.atrasadoAnt+l.avulsoMes,0))}</td><td class="n r">${fmt(b.linhas.reduce((s,l)=>s+l.totalCobrar,0))}</td><td></td></tr>
     </tbody></table>
     <div style="font-size:12px;color:#7C8074;margin-bottom:4px">Despesas da casa (água/energia/reparos): <b class="a">${fmt(b.despesa)}</b></div>
   `).join("")}
@@ -1414,6 +1435,7 @@ window.baixarRelatorio = ym => {
   let t=`*PRESTAÇÃO DE CONTAS — ${ymLabel(ym).toUpperCase()}*\n\n`;
   t+=`📊 Ocupação: ${totU?Math.round(100*ocupadas/totU):0}% (${ocupadas}/${totU})\n`;
   t+=`💰 Recebido: ${fmt(r.recebido)} de ${fmt(r.previsto)}\n`;
+  if(r.recebidoAvulso>0.005) t+=`➕ Recebido avulsas: ${fmt(r.recebidoAvulso)}\n`;
   t+=`💸 Despesas do mês: ${fmt(r.despTot)}\n`;
   if(r.atraso>0.005) t+=`🔴 Aluguéis em atraso: ${fmt(r.atraso)}\n`;
   t+=`\n————————————\n`;
@@ -1422,7 +1444,7 @@ window.baixarRelatorio = ym => {
     for(const l of b.linhas){
       const emoji=l.st==="pago"?"✅":l.st==="atrasado"?"🔴":l.st==="parcial"?"🟡":"⬜";
       const outros=l.atrasadoAnt+l.avulsoMes;
-      t+=`${emoji} ${l.unidade} (${l.inquilino}) · venc. dia ${l.diaVenc}: ${fmt(l.pg)}${l.falta>0.005?` · falta ${fmt(l.falta)}`:""}${outros>0.005?`\n   ↳ aluguel ${fmt(l.dev)}${l.atrasadoAnt>0.005?` + atrasado ${fmt(l.atrasadoAnt)}`:""}${l.avulsoMes>0.005?` + avulsas ${fmt(l.avulsoMes)}`:""} = *cobrar ${fmt(l.totalCobrar)}*`:""}\n`;
+      t+=`${emoji} ${l.unidade} (${l.inquilino}) · venc. dia ${l.diaVenc}: ${fmt(l.pg)}${l.falta>0.005?` · falta ${fmt(l.falta)}`:""}${l.avulsoPago>0.005?`\n   ✓ avulsas pagas: ${fmt(l.avulsoPago)}`:""}${outros>0.005?`\n   ↳ aluguel ${fmt(l.dev)}${l.atrasadoAnt>0.005?` + atrasado ${fmt(l.atrasadoAnt)}`:""}${l.avulsoMes>0.005?` + avulsas ${fmt(l.avulsoMes)}`:""} = *cobrar ${fmt(l.totalCobrar)}*`:""}\n`;
     }
     if(b.despesa>0) t+=`   despesas: ${fmt(b.despesa)}\n`;
   }
