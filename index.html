@@ -1302,10 +1302,19 @@ function dadosRelatorio(ym){
         if(ymDe(p.data||"")===ym){ avulsoPago+=Number(p.valor); avulsasPagasDet.push({tipo:cob.tipo,descricao:cob.descricao,valor:Number(p.valor)}); }
       }
     }
-    // se o mês foi baixado e não houve NENHUM recebimento (aluguel ou avulsa), não lista — ex-inquilino sem movimento
-    if(baixado && pg<=0.005 && avulsoPago<=0.005) continue;
+    // pagamentos de ALUGUEL que entraram neste mês, mas referentes a competências ANTERIORES
+    let recebAnterior=0; const recebAnteriorDet=[];
+    for(const p of pagamentos){
+      if(p.contratoId!==c.id) continue;
+      if(ymDe(p.data||"")===ym && p.comp && p.comp<ym){
+        recebAnterior+=Number(p.valor);
+        recebAnteriorDet.push({comp:p.comp, valor:Number(p.valor)});
+      }
+    }
+    // se o mês foi baixado e não houve NENHUM recebimento (aluguel, avulsa ou de mês anterior), não lista
+    if(baixado && pg<=0.005 && avulsoPago<=0.005 && recebAnterior<=0.005) continue;
     // se o contrato está encerrado e não houve recebimento nem valor devido neste mês, também não lista
-    if(!c.ativo && pg<=0.005 && avulsoPago<=0.005 && dev<=0.005) continue;
+    if(!c.ativo && pg<=0.005 && avulsoPago<=0.005 && recebAnterior<=0.005 && dev<=0.005) continue;
     const venceu=vencComp(c,ym)<hoje();
     const st=statusComp(c,ym);
     // atrasado de meses ANTERIORES ao mês do relatório (aluguéis em aberto)
@@ -1319,7 +1328,8 @@ function dadosRelatorio(ym){
     const b=porCasa[u.casaId];
     b.previsto+=dev; b.recebido+=pg; if(venceu) b.atraso+=falta; b.ocup++;
     b.avulsoPago=(b.avulsoPago||0)+avulsoPago;
-    b.linhas.push({unidade:u.nome,inquilino:c.nome,dev,pg,falta,st,venc:vencComp(c,ym),diaVenc:c.diaVenc,atrasadoAnt,avulsoMes,avulsasMes:avulsasMes.map(x=>({tipo:x.tipo,descricao:x.descricao,valor:faltaCob(x)})),avulsoPago,avulsasPagasDet,totalCobrar});
+    b.recebAnterior=(b.recebAnterior||0)+recebAnterior;
+    b.linhas.push({unidade:u.nome,inquilino:c.nome,dev,pg,falta,st,venc:vencComp(c,ym),diaVenc:c.diaVenc,atrasadoAnt,avulsoMes,avulsasMes:avulsasMes.map(x=>({tipo:x.tipo,descricao:x.descricao,valor:faltaCob(x)})),avulsoPago,avulsasPagasDet,recebAnterior,recebAnteriorDet,totalCobrar});
     previsto+=dev; recebido+=pg; if(venceu) atraso+=falta;
   }
   const despLista=despesas.filter(d=>ymDe(vencDesp(d))===ym);
@@ -1328,7 +1338,8 @@ function dadosRelatorio(ym){
   const despAtrasadas=despesas.filter(d=>!d.pagamento && ymDe(vencDesp(d))<ym);
   const despAtrasTot=despAtrasadas.reduce((s,d)=>s+Number(d.valor),0);
   const recebidoAvulso=Object.values(porCasa).reduce((s,b)=>s+(b.avulsoPago||0),0);
-  return {ym,porCasa:Object.values(porCasa),previsto,recebido,recebidoAvulso,atraso,despTot,liq:recebido-despTot,despLista,despAtrasadas,despAtrasTot};
+  const recebidoAnterior=Object.values(porCasa).reduce((s,b)=>s+(b.recebAnterior||0),0);
+  return {ym,porCasa:Object.values(porCasa),previsto,recebido,recebidoAvulso,recebidoAnterior,atraso,despTot,liq:recebido-despTot,despLista,despAtrasadas,despAtrasTot};
 }
 
 function renderRelatorio(){
@@ -1347,7 +1358,9 @@ function renderRelatorio(){
   </div>
   <div class="kgrid">
     <div class="kpi"><div class="l">Ocupação</div><div class="v">${totU?Math.round(100*ocupadas/totU):0}%</div><div class="muted">${ocupadas} de ${totU}</div></div>
-    <div class="kpi"><div class="l">Recebido</div><div class="v" style="color:var(--green)">${fmt(r.recebido)}</div><div class="muted">de ${fmt(r.previsto)} previstos</div></div>
+    <div class="kpi"><div class="l">Recebido aluguéis</div><div class="v" style="color:var(--green)">${fmt(r.recebido)}</div><div class="muted">de ${fmt(r.previsto)} previstos</div></div>
+    ${r.recebidoAvulso>0.005?`<div class="kpi"><div class="l">Recebido avulsas</div><div class="v" style="color:var(--green)">${fmt(r.recebidoAvulso)}</div></div>`:""}
+    ${r.recebidoAnterior>0.005?`<div class="kpi"><div class="l">Recebido meses ant.</div><div class="v" style="color:var(--green)">${fmt(r.recebidoAnterior)}</div><div class="muted">aluguéis de trás pagos agora</div></div>`:""}
     <div class="kpi"><div class="l">Despesas do mês</div><div class="v" style="color:var(--amber)">${fmt(r.despTot)}</div><div class="muted">vencendo em ${ymLabel(ym)}</div></div>
     <div class="kpi"><div class="l">Aluguéis em atraso</div><div class="v" style="color:${r.atraso>0?'var(--red)':'var(--ink)'}">${fmt(r.atraso)}</div></div>
   </div>
@@ -1359,7 +1372,7 @@ function renderRelatorio(){
   ${r.porCasa.map(b=>`<div class="card">
     <div class="spread"><h3 class="disp" style="font-size:15.5px">${esc(b.casa.nome)}</h3><b style="color:var(--green)">${fmt(b.recebido)}</b></div>
     <p class="muted">ocupadas ${b.ocup}/${b.total} · recebido ${fmt(b.recebido)} · despesas ${fmt(b.despesa)}${b.atraso>0.005?` · <span style="color:var(--red)">atraso ${fmt(b.atraso)}</span>`:""}</p>
-    ${b.linhas.map(l=>{const outros=l.atrasadoAnt+l.avulsoMes; return `<div class="compRow"><div><b>${esc(l.unidade)}</b> <span class="muted">${esc(l.inquilino)} · venc. dia ${l.diaVenc}</span>${l.avulsoPago>0.005?`<div class="muted">✓ avulsas pagas: <b style="color:var(--green)">${fmt(l.avulsoPago)}</b></div>`:""}${outros>0.005?`<div class="muted">aluguel ${fmt(l.dev)}${l.atrasadoAnt>0.005?` + atrasado ${fmt(l.atrasadoAnt)}`:""}${l.avulsoMes>0.005?` + avulsas ${fmt(l.avulsoMes)}`:""} = <b style="color:var(--red)">cobrar ${fmt(l.totalCobrar)}</b></div>`:""}</div>
+    ${b.linhas.map(l=>{const outros=l.atrasadoAnt+l.avulsoMes; return `<div class="compRow"><div><b>${esc(l.unidade)}</b> <span class="muted">${esc(l.inquilino)} · venc. dia ${l.diaVenc}</span>${l.avulsoPago>0.005?`<div class="muted">✓ avulsas pagas: <b style="color:var(--green)">${fmt(l.avulsoPago)}</b></div>`:""}${l.recebAnterior>0.005?`<div class="muted">✓ recebido de meses ant.: <b style="color:var(--green)">${fmt(l.recebAnterior)}</b> (${l.recebAnteriorDet.map(a=>ymLabel(a.comp)).join(", ")})</div>`:""}${outros>0.005?`<div class="muted">aluguel ${fmt(l.dev)}${l.atrasadoAnt>0.005?` + atrasado ${fmt(l.atrasadoAnt)}`:""}${l.avulsoMes>0.005?` + avulsas ${fmt(l.avulsoMes)}`:""} = <b style="color:var(--red)">cobrar ${fmt(l.totalCobrar)}</b></div>`:""}</div>
       <div class="row">${stTag(l.st)}<b>${fmt(l.pg)}</b></div></div>`;}).join("")||`<p class="muted" style="padding:6px 0">Sem inquilinos ativos.</p>`}
   </div>`).join("")}
   ${nav()}`;
@@ -1399,6 +1412,7 @@ function htmlRelatorio(ym){
     <div class="c"><div class="l">Previsto</div><div class="v">${fmt(r.previsto)}</div></div>
     <div class="c"><div class="l">Recebido aluguéis</div><div class="v g">${fmt(r.recebido)}</div></div>
     ${r.recebidoAvulso>0.005?`<div class="c"><div class="l">Recebido avulsas</div><div class="v g">${fmt(r.recebidoAvulso)}</div></div>`:""}
+    ${r.recebidoAnterior>0.005?`<div class="c"><div class="l">Recebido de meses ant.</div><div class="v g">${fmt(r.recebidoAnterior)}</div></div>`:""}
     <div class="c"><div class="l">Despesas do mês</div><div class="v a">${fmt(r.despTot)}</div></div>
     ${r.despAtrasTot>0.005?`<div class="c"><div class="l">Despesas atrasadas</div><div class="v a">${fmt(r.despAtrasTot)}</div></div>`:""}
   </div>
@@ -1409,11 +1423,17 @@ function htmlRelatorio(ym){
       const outros=l.atrasadoAnt+l.avulsoMes;
       const detCobrar=l.avulsasMes.map(a=>`${(TIPO_COB[a.tipo]||a.tipo).replace(/[^ -~À-ÿ]/g,"").trim()}${a.descricao?` (${esc(a.descricao)})`:""} ${fmt(a.valor)}`).join("; ");
       const detPagas=l.avulsasPagasDet.map(a=>`${(TIPO_COB[a.tipo]||a.tipo).replace(/[^ -~À-ÿ]/g,"").trim()}${a.descricao?` (${esc(a.descricao)})`:""} ${fmt(a.valor)}`).join("; ");
+      const detAnt=l.recebAnteriorDet.map(a=>`aluguel ${ymLabel(a.comp)} ${fmt(a.valor)}`).join("; ");
       const selo=`<span class="selo s-${l.st}">${stTxt[l.st]}</span>`;
-      const linhaDet=(detCobrar||detPagas)?`<tr><td></td><td colspan="8" style="font-size:11px;color:#7C8074;padding-top:0">${detPagas?`✓ avulsas pagas: ${detPagas}`:""}${detPagas&&detCobrar?" · ":""}${detCobrar?`a cobrar: ${detCobrar}`:""}</td></tr>`:"";
+      const partesDet=[];
+      if(detPagas) partesDet.push(`✓ avulsas pagas: ${detPagas}`);
+      if(detAnt) partesDet.push(`✓ recebido de meses ant.: ${detAnt}`);
+      if(detCobrar) partesDet.push(`a cobrar: ${detCobrar}`);
+      const linhaDet=partesDet.length?`<tr><td></td><td colspan="8" style="font-size:11px;color:#7C8074;padding-top:0">${partesDet.join(" · ")}</td></tr>`:"";
       return `<tr><td>${esc(l.unidade)}</td><td>${esc(l.inquilino)}</td><td>${dBr(l.venc)}</td><td class="n">${fmt(l.dev)}</td><td class="n g">${fmt(l.pg)}</td><td class="n${l.avulsoPago>0.005?' g':''}">${l.avulsoPago>0.005?fmt(l.avulsoPago):"—"}</td><td class="n${outros>0.005?' a':''}">${outros>0.005?fmt(outros):"—"}</td><td class="n ${l.totalCobrar>0.005?'r':''}"><b>${l.totalCobrar>0.005?fmt(l.totalCobrar):"—"}</b></td><td>${selo}</td></tr>${linhaDet}`;
     }).join("")||`<tr><td colspan="9" style="color:#7C8074">Sem inquilinos ativos</td></tr>`}
     <tr class="tot"><td colspan="3">Subtotal</td><td class="n">${fmt(b.previsto)}</td><td class="n g">${fmt(b.recebido)}</td><td class="n g">${fmt(b.avulsoPago||0)}</td><td class="n a">${fmt(b.linhas.reduce((s,l)=>s+l.atrasadoAnt+l.avulsoMes,0))}</td><td class="n r">${fmt(b.linhas.reduce((s,l)=>s+l.totalCobrar,0))}</td><td></td></tr>
+    ${(b.recebAnterior||0)>0.005?`<tr><td colspan="9" style="font-size:11px;color:#2E6B46;padding-top:2px">✓ Total que entrou nesta casa no mês: <b>${fmt(b.recebido+(b.avulsoPago||0)+(b.recebAnterior||0))}</b> (inclui ${fmt(b.recebAnterior)} de aluguéis de meses anteriores pagos agora)</td></tr>`:""}
     </tbody></table>
     <div style="font-size:12px;color:#7C8074;margin-bottom:4px">Despesas da casa (água/energia/reparos): <b class="a">${fmt(b.despesa)}</b></div>
   `).join("")}
@@ -1443,6 +1463,7 @@ window.baixarRelatorio = ym => {
   t+=`📊 Ocupação: ${totU?Math.round(100*ocupadas/totU):0}% (${ocupadas}/${totU})\n`;
   t+=`💰 Recebido: ${fmt(r.recebido)} de ${fmt(r.previsto)}\n`;
   if(r.recebidoAvulso>0.005) t+=`➕ Recebido avulsas: ${fmt(r.recebidoAvulso)}\n`;
+  if(r.recebidoAnterior>0.005) t+=`➕ Recebido de meses anteriores: ${fmt(r.recebidoAnterior)}\n`;
   t+=`💸 Despesas do mês: ${fmt(r.despTot)}\n`;
   if(r.atraso>0.005) t+=`🔴 Aluguéis em atraso: ${fmt(r.atraso)}\n`;
   t+=`\n————————————\n`;
@@ -1451,7 +1472,7 @@ window.baixarRelatorio = ym => {
     for(const l of b.linhas){
       const emoji=l.st==="pago"?"✅":l.st==="atrasado"?"🔴":l.st==="parcial"?"🟡":"⬜";
       const outros=l.atrasadoAnt+l.avulsoMes;
-      t+=`${emoji} ${l.unidade} (${l.inquilino}) · venc. dia ${l.diaVenc}: ${fmt(l.pg)}${l.falta>0.005?` · falta ${fmt(l.falta)}`:""}${l.avulsoPago>0.005?`\n   ✓ avulsas pagas: ${fmt(l.avulsoPago)}`:""}${outros>0.005?`\n   ↳ aluguel ${fmt(l.dev)}${l.atrasadoAnt>0.005?` + atrasado ${fmt(l.atrasadoAnt)}`:""}${l.avulsoMes>0.005?` + avulsas ${fmt(l.avulsoMes)}`:""} = *cobrar ${fmt(l.totalCobrar)}*`:""}\n`;
+      t+=`${emoji} ${l.unidade} (${l.inquilino}) · venc. dia ${l.diaVenc}: ${fmt(l.pg)}${l.falta>0.005?` · falta ${fmt(l.falta)}`:""}${l.avulsoPago>0.005?`\n   ✓ avulsas pagas: ${fmt(l.avulsoPago)}`:""}${l.recebAnterior>0.005?`\n   ✓ recebido de meses ant.: ${fmt(l.recebAnterior)}`:""}${outros>0.005?`\n   ↳ aluguel ${fmt(l.dev)}${l.atrasadoAnt>0.005?` + atrasado ${fmt(l.atrasadoAnt)}`:""}${l.avulsoMes>0.005?` + avulsas ${fmt(l.avulsoMes)}`:""} = *cobrar ${fmt(l.totalCobrar)}*`:""}\n`;
     }
     if(b.despesa>0) t+=`   despesas: ${fmt(b.despesa)}\n`;
   }
