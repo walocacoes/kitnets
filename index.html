@@ -185,7 +185,8 @@ const ymDe = s => s.slice(0,7);
 function contratoNoMes(c, ym){ // contrato vigente na competência ym
   if(ymDe(c.dataEntrada) > ym) return false;
   const fim = c.ativo ? ymAtual() : ymDe(c.dataSaida||c.dataEntrada);
-  return ym <= fim;
+  if(ym > fim) return false;
+  return true;
 }
 function valorVigente(c, ym){
   const ref = ym+"-31";
@@ -1226,7 +1227,7 @@ function htmlDevedores(){
   const devs=devedoresAgrupados();
   const total=devs.reduce((s,d)=>s+d.falta,0);
   const hj=new Date().toLocaleDateString("pt-BR");
-  const stTxt={pago:"Pago",parcial:"Parcial",aberto:"Em aberto",atrasado:"Atrasado"};
+  const stTxt={pago:"Pago",parcial:"Parcial",aberto:"Em aberto",atrasado:"Atrasado",baixado:"Baixado"};
   return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Relatório de Devedores</title>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
@@ -1293,6 +1294,18 @@ function dadosRelatorio(ym){
   for(const c of ativosNoMes){
     const u=unidades.find(x=>x.id===c.unidadeId); if(!u||!porCasa[u.casaId]) continue;
     const dev=devidoComp(c,ym), pg=pagoComp(c.id,ym), falta=Math.max(0,dev-pg);
+    const baixado=(c.baixados||[]).includes(ym);
+    // avulsas pagas neste mês (pode haver mesmo com aluguel baixado)
+    let avulsoPago=0; const avulsasPagasDet=[];
+    for(const cob of cobrancasDe(c.id)){
+      for(const p of (cob.pagamentos||[])){
+        if(ymDe(p.data||"")===ym){ avulsoPago+=Number(p.valor); avulsasPagasDet.push({tipo:cob.tipo,descricao:cob.descricao,valor:Number(p.valor)}); }
+      }
+    }
+    // se o mês foi baixado e não houve NENHUM recebimento (aluguel ou avulsa), não lista — ex-inquilino sem movimento
+    if(baixado && pg<=0.005 && avulsoPago<=0.005) continue;
+    // se o contrato está encerrado e não houve recebimento nem valor devido neste mês, também não lista
+    if(!c.ativo && pg<=0.005 && avulsoPago<=0.005 && dev<=0.005) continue;
     const venceu=vencComp(c,ym)<hoje();
     const st=statusComp(c,ym);
     // atrasado de meses ANTERIORES ao mês do relatório (aluguéis em aberto)
@@ -1302,13 +1315,6 @@ function dadosRelatorio(ym){
     // cobranças avulsas com vencimento neste mês (ainda em aberto) — detalhadas
     const avulsasMes=cobrancasDe(c.id).filter(cob=>ymDe(cob.vencimento||"")===ym && faltaCob(cob)>0.005);
     const avulsoMes=avulsasMes.reduce((s,cob)=>s+faltaCob(cob),0);
-    // avulsas PAGAS neste mês (qualquer pagamento com data no mês) — entram no "recebido"
-    let avulsoPago=0; const avulsasPagasDet=[];
-    for(const cob of cobrancasDe(c.id)){
-      for(const p of (cob.pagamentos||[])){
-        if(ymDe(p.data||"")===ym){ avulsoPago+=Number(p.valor); avulsasPagasDet.push({tipo:cob.tipo,descricao:cob.descricao,valor:Number(p.valor)}); }
-      }
-    }
     const totalCobrar=falta+atrasadoAnt+avulsoMes;
     const b=porCasa[u.casaId];
     b.previsto+=dev; b.recebido+=pg; if(venceu) b.atraso+=falta; b.ocup++;
@@ -1363,7 +1369,7 @@ function htmlRelatorio(ym){
   const r=dadosRelatorio(ym);
   const totU=unidades.length, ocupadas=r.porCasa.reduce((s,b)=>s+b.ocup,0);
   const hj=new Date().toLocaleDateString("pt-BR");
-  const stTxt={pago:"Pago",parcial:"Parcial",aberto:"Em aberto",atrasado:"Atrasado"};
+  const stTxt={pago:"Pago",parcial:"Parcial",aberto:"Em aberto",atrasado:"Atrasado",baixado:"Baixado"};
   return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Relatório ${ymLabel(ym)}</title>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
@@ -1382,6 +1388,7 @@ function htmlRelatorio(ym){
     .selo{display:inline-block;padding:3px 10px;border-radius:99px;font-size:11px;font-weight:700;white-space:nowrap}
     .s-pago{background:#E2EFE6;color:#2E6B46} .s-parcial{background:#F7EDDA;color:#A26714}
     .s-aberto{background:#EEEDE7;color:#7C8074} .s-atrasado{background:#F9E6E1;color:#B23E2C}
+    .s-baixado{background:#EEEDE7;color:#7C8074}
     tbody tr:nth-child(4n+1){background:#FAFAF7}
     @media print{body{padding:12px}.noprint{display:none}}
   </style></head><body>
