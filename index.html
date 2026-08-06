@@ -1370,8 +1370,8 @@ function renderRelatorio(){
     ${r.despAtrasadas.map(d=>{const cs=casas.find(c=>c.id===d.casaId);return `<div class="compRow"><div><b>${TIPO_DESP[d.tipo]||d.tipo}</b>${d.descricao?` · ${esc(d.descricao)}`:""}<div class="muted">${esc(cs?.nome||"?")} · venceu ${dBr(vencDesp(d))}</div></div><b>${fmt(d.valor)}</b></div>`;}).join("")}
   </div>`:""}
   ${r.porCasa.map(b=>`<div class="card">
-    <div class="spread"><h3 class="disp" style="font-size:15.5px">${esc(b.casa.nome)}</h3><b style="color:var(--green)">${fmt(b.recebido)}</b></div>
-    <p class="muted">ocupadas ${b.ocup}/${b.total} · recebido ${fmt(b.recebido)} · despesas ${fmt(b.despesa)}${b.atraso>0.005?` · <span style="color:var(--red)">atraso ${fmt(b.atraso)}</span>`:""}</p>
+    <div class="spread"><h3 class="disp" style="font-size:15.5px">${esc(b.casa.nome)}</h3><b style="color:var(--green)">${fmt(b.recebido+(b.avulsoPago||0)+(b.recebAnterior||0))}</b></div>
+    <p class="muted">ocupadas ${b.ocup}/${b.total} · entrou ${fmt(b.recebido+(b.avulsoPago||0)+(b.recebAnterior||0))} · despesas ${fmt(b.despesa)}${b.atraso>0.005?` · <span style="color:var(--red)">atraso ${fmt(b.atraso)}</span>`:""}</p>
     ${b.linhas.map(l=>{const outros=l.atrasadoAnt+l.avulsoMes; return `<div class="compRow"><div><b>${esc(l.unidade)}</b> <span class="muted">${esc(l.inquilino)} · venc. dia ${l.diaVenc}</span>${l.avulsoPago>0.005?`<div class="muted">✓ avulsas pagas: <b style="color:var(--green)">${fmt(l.avulsoPago)}</b></div>`:""}${l.recebAnterior>0.005?`<div class="muted">✓ recebido de meses ant.: <b style="color:var(--green)">${fmt(l.recebAnterior)}</b> (${l.recebAnteriorDet.map(a=>ymLabel(a.comp)).join(", ")})</div>`:""}${outros>0.005?`<div class="muted">aluguel ${fmt(l.dev)}${l.atrasadoAnt>0.005?` + atrasado ${fmt(l.atrasadoAnt)}`:""}${l.avulsoMes>0.005?` + avulsas ${fmt(l.avulsoMes)}`:""} = <b style="color:var(--red)">cobrar ${fmt(l.totalCobrar)}</b></div>`:""}</div>
       <div class="row">${stTag(l.st)}<b>${fmt(l.pg)}</b></div></div>`;}).join("")||`<p class="muted" style="padding:6px 0">Sem inquilinos ativos.</p>`}
   </div>`).join("")}
@@ -1417,7 +1417,7 @@ function htmlRelatorio(ym){
     ${r.despAtrasTot>0.005?`<div class="c"><div class="l">Despesas atrasadas</div><div class="v a">${fmt(r.despAtrasTot)}</div></div>`:""}
   </div>
   ${r.porCasa.map(b=>`
-    <h2>${b.casa.nome} — recebido ${fmt(b.recebido)}</h2>
+    <h2>${b.casa.nome} — entrou ${fmt(b.recebido+(b.avulsoPago||0)+(b.recebAnterior||0))}</h2>
     <table><thead><tr><th>Kitnet</th><th>Inquilino</th><th>Venc.</th><th class="n">Aluguel</th><th class="n">Pago</th><th class="n">Avulsas pagas</th><th class="n">Atrasado + avulsas</th><th class="n">Total a cobrar</th><th>Status</th></tr></thead>
     <tbody>${b.linhas.map(l=>{
       const outros=l.atrasadoAnt+l.avulsoMes;
@@ -1468,7 +1468,7 @@ window.baixarRelatorio = ym => {
   if(r.atraso>0.005) t+=`🔴 Aluguéis em atraso: ${fmt(r.atraso)}\n`;
   t+=`\n————————————\n`;
   for(const b of r.porCasa){
-    t+=`\n*${b.casa.nome}* — recebido ${fmt(b.recebido)}\n`;
+    t+=`\n*${b.casa.nome}* — entrou ${fmt(b.recebido+(b.avulsoPago||0)+(b.recebAnterior||0))}\n`;
     for(const l of b.linhas){
       const emoji=l.st==="pago"?"✅":l.st==="atrasado"?"🔴":l.st==="parcial"?"🟡":"⬜";
       const outros=l.atrasadoAnt+l.avulsoMes;
