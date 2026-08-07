@@ -409,7 +409,8 @@ function renderCasas(){
           }
           return `<div class="tile" onclick="abrirUnidade('${u.id}')">
             <div class="nm">${esc(u.nome)}</div>
-            <div class="inq">${c?esc(c.nome.split(" ")[0]):"—"}</div>${tag}
+            <div class="inq">${c?esc(c.nome.split(" ")[0]):"—"}</div>
+            ${c?`<div style="font-size:10.5px;color:var(--muted);margin-bottom:5px">vence dia ${c.diaVenc}</div>`:""}${tag}
             ${s.total>0.005?`<div style="font-size:11px;font-weight:700;color:var(--red);margin-top:4px">${fmt(s.total)}</div>`:""}</div>`;
         }).join("") || `<p class="muted">Nenhuma unidade ainda.</p>`}
       </div></div>`;
