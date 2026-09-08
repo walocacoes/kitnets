@@ -107,7 +107,7 @@ const firebaseConfig = {
   messagingSenderId: "214020402905",
   appId: "1:214020402905:web:0bb09e23f0e1b11a27d8c8"
 };
-const EMAILS_PERMITIDOS = ["noletoadrielly@gmail.com","walocacoesaux@gmail.com"]; // pode adicionar o do seu pai
+const EMAILS_PERMITIDOS = ["noletoadrielly@gmail.com"]; // pode adicionar o do seu pai
 /* ================================== */
 
 const fb = initializeApp(firebaseConfig);
@@ -222,7 +222,9 @@ const CONTAS_BASE = ["Sicredi","Dinheiro"];
 const contasDisponiveis = () => [...new Set([...CONTAS_BASE, ...despesas.map(d=>d.conta).filter(Boolean)])];
 function compsDo(c){
   const ini = ymDe(c.dataEntrada);
-  const fim = c.ativo ? ymAtual() : ymDe(c.dataSaida||c.dataEntrada);
+  let fim = c.ativo ? ymAtual() : ymDe(c.dataSaida||c.dataEntrada);
+  // se foi aberto um mês futuro para pagamento antecipado, estende até lá
+  if(c.ativo && c.ateComp && c.ateComp>fim) fim=c.ateComp;
   const out=[]; let ym=ini;
   while(ym<=fim){ out.push(ym); ym=ymAdd(ym,1); if(out.length>240) break; }
   return out.reverse();
@@ -493,7 +495,8 @@ async function renderUnidade(uId){
       <div class="docThumbs" id="docs">​<span class="muted">Carregando…</span></div>
     </div>
     <div class="card">
-      <h3 class="disp" style="font-size:15.5px;margin-bottom:4px">Aluguéis</h3>
+      <div class="spread"><h3 class="disp" style="font-size:15.5px;margin-bottom:4px">Aluguéis</h3>
+        <button class="btn sm sec" onclick="abrirMesFuturo('${c.id}')">＋ mês futuro</button></div>
       ${comps.map(ym=>{
         const dev=devidoComp(c,ym), pg=pagoComp(c.id,ym), st=statusComp(c,ym);
         const pgs = pagamentos.filter(p=>p.contratoId===c.id&&p.comp===ym).sort((a,b)=>a.data.localeCompare(b.data));
@@ -637,6 +640,15 @@ window.salvarPag = async (cId,ym) => {
   closeModal();
 };
 window.delPag = async id => { if(confirm("Excluir este pagamento?")) await deleteDoc(doc(db,"pagamentos",id)); };
+window.abrirMesFuturo = async cId => {
+  const c=contratos.find(x=>x.id===cId);
+  // maior competência já visível hoje
+  const comps=compsDo(c);
+  const maior = comps.length ? comps[0] : ymAtual(); // compsDo vem em ordem decrescente
+  const prox = ymAdd(maior,1);
+  if(!confirm(`Abrir ${ymLabel(prox)} para lançar pagamento antecipado?`)) return;
+  await updateDoc(doc(db,"contratos",cId),{ateComp:prox});
+};
 window.editPag = id => {
   const p=pagamentos.find(x=>x.id===id); if(!p) return;
   openModal(`<h3>Editar pagamento</h3>
