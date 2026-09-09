@@ -217,6 +217,25 @@ const stTag = s => ({pago:'<span class="tag t-pago">Pago</span>',parcial:'<span 
 const vencDesp = d => d.vencimento || d.data || hoje();
 const stDesp = d => d.pagamento ? "pago" : (vencDesp(d) < hoje() ? "vencido" : "avencer");
 const stDespTag = s => ({pago:'<span class="tag t-pago">Paga</span>',vencido:'<span class="tag t-atrasado">Vencida</span>',avencer:'<span class="tag t-parcial">A vencer</span>'}[s]);
+// prazo até corte por tipo (dias após o vencimento) — margem segura
+const PRAZO_CORTE = {energia:15, agua:25};
+// retorna null se não se aplica; senão {limite, diasRestantes, nivel}
+function riscoCorte(d){
+  if(d.pagamento) return null;                       // já paga, sem risco
+  const prazo = PRAZO_CORTE[d.tipo];
+  if(!prazo) return null;                             // só energia e água
+  const venc = new Date(vencDesp(d));
+  const limite = new Date(venc); limite.setDate(limite.getDate()+prazo);
+  const hj = new Date(hoje());
+  const diasRestantes = Math.round((limite - hj)/86400000);
+  let nivel;
+  if(diasRestantes < 0) nivel = "passou";            // já passou do prazo seguro
+  else if(diasRestantes <= 3) nivel = "critico";     // 3 dias ou menos
+  else if(diasRestantes <= 7) nivel = "atencao";     // 1 semana
+  else nivel = "ok";
+  const limiteStr = `${pad(limite.getDate())}/${pad(limite.getMonth()+1)}/${limite.getFullYear()}`;
+  return {limite:limiteStr, diasRestantes, nivel};
+}
 const FORMAS = ["Pix","Dinheiro","Boleto","Débito automático","Cartão","Transferência","Outro"];
 const CONTAS_BASE = ["Sicredi","Dinheiro"];
 const contasDisponiveis = () => [...new Set([...CONTAS_BASE, ...despesas.map(d=>d.conta).filter(Boolean)])];
@@ -980,9 +999,21 @@ function renderDespesas(){
   const vencidas=lista.filter(d=>stDesp(d)==="vencido").reduce((s,d)=>s+Number(d.valor),0);
   const porCasa={};
   for(const d of lista){ porCasa[d.casaId]=(porCasa[d.casaId]||0)+Number(d.valor); }
+  // contas em risco de corte (todas, não só do mês selecionado), ordenadas por urgência
+  const emRisco=despesas.map(d=>({d,rc:riscoCorte(d)})).filter(x=>x.rc && (x.rc.nivel==="passou"||x.rc.nivel==="critico"||x.rc.nivel==="atencao"))
+    .sort((a,b)=>a.rc.diasRestantes-b.rc.diasRestantes);
   app.innerHTML = `
   <div class="hdr"><div><div class="sub">Água · energia · reparos</div><h1>Despesas</h1></div>
     <button class="btn sm" onclick="novaDespesa()">＋ lançar</button></div>
+  ${emRisco.length?`<div class="card" style="border-color:var(--red);border-width:2px">
+    <h3 class="disp" style="font-size:15px;color:var(--red);margin-bottom:6px">🚨 Risco de corte</h3>
+    ${emRisco.map(x=>{const cs=casas.find(c=>c.id===x.d.casaId);const cor=x.rc.nivel==="atencao"?"var(--amber)":"var(--red)";
+      return `<div class="expRow"><div><b>${TIPO_DESP[x.d.tipo]||x.d.tipo}</b>${x.d.descricao?` · ${esc(x.d.descricao)}`:""}
+        <div class="muted">${esc(cs?.nome||"?")} · venceu ${dBr(vencDesp(x.d))}</div>
+        <div style="color:${cor};font-size:11.5px;font-weight:700">${x.rc.nivel==="passou"?`prazo seguro passou em ${x.rc.limite}`:`pague até ${x.rc.limite} · faltam ${x.rc.diasRestantes} ${x.rc.diasRestantes===1?"dia":"dias"}`}</div></div>
+        <div style="text-align:right"><b>${fmt(x.d.valor)}</b><div class="row" style="justify-content:flex-end;margin-top:4px"><button class="btn sm" onclick="pagarDesp('${x.d.id}')">pagar</button></div></div>
+      </div>`;}).join("")}
+  </div>`:""}
   <div class="mSel"><button onclick="mudaMes(-1)">‹</button><div class="lbl">${ymLabel(ym)}</div><button onclick="mudaMes(1)">›</button></div>
   <div class="kgrid">
     <div class="kpi"><div class="l">Total do mês</div><div class="v" style="color:var(--amber)">${fmt(total)}</div>
@@ -995,10 +1026,18 @@ function renderDespesas(){
     ${lista.length ? lista.map(d=>{
       const cs=casas.find(c=>c.id===d.casaId);
       const st=stDesp(d);
+      const rc=riscoCorte(d);
+      let alerta="";
+      if(rc){
+        if(rc.nivel==="passou") alerta=`<div style="margin-top:5px;padding:6px 9px;border-radius:8px;background:var(--red-bg);color:var(--red);font-size:11.5px;font-weight:700">🚨 RISCO DE CORTE — prazo seguro venceu em ${rc.limite}. Pague o quanto antes!</div>`;
+        else if(rc.nivel==="critico") alerta=`<div style="margin-top:5px;padding:6px 9px;border-radius:8px;background:var(--red-bg);color:var(--red);font-size:11.5px;font-weight:700">🚨 Pague até ${rc.limite} (faltam ${rc.diasRestantes} ${rc.diasRestantes===1?"dia":"dias"}) p/ evitar corte</div>`;
+        else if(rc.nivel==="atencao") alerta=`<div style="margin-top:5px;padding:6px 9px;border-radius:8px;background:var(--amber-bg);color:var(--amber);font-size:11.5px;font-weight:700">⚠️ Pague até ${rc.limite} (faltam ${rc.diasRestantes} dias) p/ evitar corte</div>`;
+      }
       return `<div class="expRow">
         <div><b>${TIPO_DESP[d.tipo]||d.tipo}</b>${d.descricao?` · ${esc(d.descricao)}`:""}
           <div class="muted">${esc(cs?.nome||"?")} · vence ${dBr(vencDesp(d))}</div>
           ${d.pagamento?`<div class="muted">✓ pago ${dBr(d.pagamento)}${d.formaPag?` · ${esc(d.formaPag)}`:""}${d.conta?` · ${esc(d.conta)}`:""}</div>`:""}
+          ${alerta}
         </div>
         <div style="text-align:right">
           <b>${fmt(d.valor)}</b>
