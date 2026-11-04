@@ -507,6 +507,17 @@ async function renderUnidade(uId){
         <button class="btn sm sec" onclick="transferir('${c.id}')">Transferir de kitnet</button>
         <button class="btn sm danger" onclick="encerrar('${c.id}')">Encerrar contrato</button>
       </div>
+      ${(() => {
+        // se veio de transferência e há pagamentos/cobranças presos no contrato anterior, oferecer recuperação
+        if(!c.contratoAnterior) return "";
+        const presosPag=pagamentos.filter(p=>p.contratoId===c.contratoAnterior && (p.comp||"")>=ymDe(c.dataEntrada));
+        const presosCob=cobrancas.filter(x=>x.contratoId===c.contratoAnterior && faltaCob(x)>0.005);
+        if(!presosPag.length && !presosCob.length) return "";
+        const tot=presosPag.reduce((s,p)=>s+Number(p.valor),0);
+        return `<div style="margin-top:10px;padding:10px;border-radius:10px;background:var(--amber-bg)">
+          <div class="muted" style="color:var(--amber);font-weight:700">⚠️ Há pagamentos da kitnet anterior que não vieram nesta transferência${tot>0?` (${fmt(tot)})`:""}.</div>
+          <button class="btn sm" style="margin-top:6px" onclick="puxarPagamentos('${c.id}')">Trazer pagamentos para esta kitnet</button></div>`;
+      })()}
     </div>
     <div class="card">
       <div class="spread"><h3 class="disp" style="font-size:15.5px">Documentos</h3>
@@ -526,7 +537,7 @@ async function renderUnidade(uId){
             <div><b>${ymLabel(ym)}</b><div class="muted">venc. ${dBr(vencComp(c,ym))} · ${baixado?"baixado sem cobrança":`${fmt(pg)} de ${fmt(dev)}${dev-pg>0.005?` · falta <b>${fmt(dev-pg)}</b>`:""}`}</div></div>
             <div class="row">${stTag(st)}${baixado?"":`<button class="btn sm" onclick="regPag('${c.id}','${ym}')">＋ pagar</button>`}</div>
           </div>
-          ${aj.map(a=>`<div class="muted" style="margin-top:4px">⚙️ Ajuste ${fmt(a.valor)} — ${esc(a.motivo||"")}</div>`).join("")}
+          ${aj.map(a=>{const idx=(c.ajustes||[]).indexOf(a);return `<div class="muted spread" style="margin-top:4px"><span>⚙️ Ajuste ${fmt(a.valor)} — ${esc(a.motivo||"")}</span><button class="iconb" onclick="removerAjuste('${c.id}',${idx})">🗑</button></div>`;}).join("")}
           ${pgs.map(p=>`<div class="muted spread" style="margin-top:4px"><span>💵 ${dBr(p.data)} — ${fmt(p.valor)}${p.obs?` · ${esc(p.obs)}`:""}</span><span class="row"><button class="iconb" onclick="editPag('${p.id}')">✎</button><button class="iconb" onclick="delPag('${p.id}')">🗑</button></span></div>`).join("")}
           ${dev-pg>0.005 && !baixado ? `<button class="btn sm sec" style="margin-top:6px;align-self:flex-start" onclick="baixarComp('${c.id}','${ym}')">Baixar sem cobrar</button>` : ""}
           ${baixado ? `<button class="btn sm sec" style="margin-top:6px;align-self:flex-start" onclick="reabrirComp('${c.id}','${ym}')">Reabrir cobrança</button>` : ""}
@@ -799,13 +810,21 @@ window.salvarReaj = async cId => {
   closeModal();
 };
 
+window.removerAjuste = async (cId,idx) => {
+  const c=contratos.find(x=>x.id===cId);
+  const aj=[...(c.ajustes||[])];
+  if(idx<0||idx>=aj.length) return;
+  if(!confirm(`Remover este ajuste de ${fmt(aj[idx].valor)}? O vencimento continua como está, só a cobrança/desconto é desfeita.`)) return;
+  aj.splice(idx,1);
+  await updateDoc(doc(db,"contratos",cId),{ajustes:aj});
+};
 window.mudarVenc = cId => {
   const c=contratos.find(x=>x.id===cId);
   openModal(`<h3>Mudar dia do vencimento</h3>
     <p class="muted">Hoje vence dia <b>${c.diaVenc}</b>. Se o novo dia for depois, o inquilino ganha dias a mais no ciclo — o sistema calcula o pro-rata pra cobrar na transição. Se for antes, vira desconto.</p>
     <label>Novo dia do vencimento</label><input id="f-dia" type="number" min="1" max="31" oninput="calcPro('${cId}')">
     <div class="card" id="pro-out" style="margin-top:12px;display:none"></div>
-    <label class="row" style="margin-top:6px"><input type="checkbox" id="f-lanca" checked style="width:auto"> lançar esse ajuste no mês atual</label>
+    <label class="row" style="margin-top:6px"><input type="checkbox" id="f-lanca" style="width:auto"> também cobrar/descontar o pro-rata deste mês (deixe desmarcado se não for cobrar nada)</label>
     <div class="mAct"><button class="btn sec" onclick="closeModal()">Cancelar</button>
     <button class="btn" onclick="salvarVenc('${cId}')">Confirmar</button></div>`);
 };
@@ -829,6 +848,8 @@ window.salvarVenc = async cId => {
   if(diff!==0 && $("#f-lanca").checked){
     const val=valorVigente(c,ymAtual());
     const ajuste=+((val/30)*diff).toFixed(2);
+    const txt=diff>0?`cobrança extra de ${fmt(Math.abs(ajuste))}`:`desconto de ${fmt(Math.abs(ajuste))}`;
+    if(!confirm(`Você marcou para lançar o pro-rata: ${txt} no mês atual. Confirma? (Se só quer mudar o dia sem cobrar nada, cancele e desmarque a opção.)`)) return;
     upd.ajustes=[...(c.ajustes||[]),{comp:ymAtual(),valor:ajuste,motivo:`Pro-rata: vencimento dia ${c.diaVenc} → dia ${novo}`}];
   }
   await updateDoc(doc(db,"contratos",cId),upd);
@@ -964,6 +985,17 @@ window.transferir = cId => {
     <div class="mAct"><button class="btn sec" onclick="closeModal()">Cancelar</button>
     <button class="btn" onclick="confTransferir('${cId}')">Transferir</button></div>`);
 };
+window.puxarPagamentos = async cId => {
+  const c=contratos.find(x=>x.id===cId);
+  if(!c.contratoAnterior) return;
+  const ini=ymDe(c.dataEntrada);
+  const pag=pagamentos.filter(p=>p.contratoId===c.contratoAnterior && (p.comp||"")>=ini);
+  const cob=cobrancas.filter(x=>x.contratoId===c.contratoAnterior && faltaCob(x)>0.005);
+  if(!confirm(`Trazer ${pag.length} pagamento(s)${cob.length?` e ${cob.length} cobrança(s)`:""} da kitnet anterior para esta? O histórico antigo é preservado.`)) return;
+  for(const p of pag) await updateDoc(doc(db,"pagamentos",p.id),{contratoId:cId});
+  for(const x of cob) await updateDoc(doc(db,"cobrancas",x.id),{contratoId:cId});
+  render();
+};
 window.confTransferir = async cId => {
   const c=contratos.find(x=>x.id===cId);
   const destId=$("#f-dest").value, mud=$("#f-mud").value||hoje();
@@ -971,6 +1003,7 @@ window.confTransferir = async cId => {
   const dia=+$("#f-dia").value||c.diaVenc;
   if(!destId){ alert("Escolha a kitnet de destino."); return; }
   const uDest=unidades.find(u=>u.id===destId);
+  const mudYm=ymDe(mud);
   // 1) encerra o contrato atual na data da mudança
   await updateDoc(doc(db,"contratos",cId),{ativo:false,dataSaida:mud,motivoSaida:`Transferido para ${uDest.nome}`});
   // 2) abre novo contrato na kitnet de destino, herdando os dados do inquilino
@@ -980,7 +1013,24 @@ window.confTransferir = async cId => {
     valores:[{valor:val,desde:mud}], ajustes:[], ativo:true,
     transferidoDe:c.unidadeId, contratoAnterior:cId
   });
-  // 3) copia os documentos anexados para o novo contrato
+  // 3) migra para o novo contrato os pagamentos de aluguel do mês da mudança em diante (adiantamentos)
+  //    pagamentos de meses anteriores ficam no contrato antigo (período em que morou lá)
+  try{
+    for(const p of pagamentos){
+      if(p.contratoId===cId && (p.comp||"") >= mudYm){
+        await updateDoc(doc(db,"pagamentos",p.id),{contratoId:novo.id});
+      }
+    }
+  }catch(e){}
+  // 4) migra cobranças avulsas ainda EM ABERTO (dívida que segue com a pessoa)
+  try{
+    for(const cob of cobrancas){
+      if(cob.contratoId===cId && faltaCob(cob)>0.005){
+        await updateDoc(doc(db,"cobrancas",cob.id),{contratoId:novo.id});
+      }
+    }
+  }catch(e){}
+  // 5) copia os documentos anexados para o novo contrato
   try{
     const snap=await getDocs(query(collection(db,"documentos"),where("contratoId","==",cId)));
     for(const d of snap.docs){ const x=d.data(); await addDoc(collection(db,"documentos"),{contratoId:novo.id,nome:x.nome,data:x.data,base64:x.base64}); }
