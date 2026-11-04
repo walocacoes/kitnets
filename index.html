@@ -581,6 +581,14 @@ async function renderUnidade(uId){
           <div style="text-align:right">${sd.total>0.005?`<b style="color:var(--red)">deve ${fmt(sd.total)}</b>`:`<span class="tag t-pago">quitado</span>`}<div class="muted" style="font-size:11px">toque p/ ver ▾</div></div>
         </summary>
         <div style="margin-top:8px">
+          <div class="card" style="box-shadow:none;background:var(--bg);margin-bottom:10px">
+            ${a.telefone?`<div class="muted">📞 <a href="https://wa.me/55${a.telefone.replace(/\D/g,"")}">${esc(a.telefone)}</a></div>`:""}
+            ${a.trabalho?`<div class="muted">💼 ${esc(a.trabalho)}</div>`:""}
+            ${a.obs?`<div class="muted">📝 ${esc(a.obs)}</div>`:""}
+            ${!a.telefone&&!a.trabalho&&!a.obs?`<div class="muted">Sem contato/observações cadastrados.</div>`:""}
+            <div class="muted" style="margin-top:8px;font-weight:600">Documentos</div>
+            <div class="docThumbs" id="docs-${a.id}"><span class="muted">Carregando…</span></div>
+          </div>
           ${compsDo(a).map(ym=>{
             const dev=devidoComp(a,ym), pg=pagoComp(a.id,ym), st=statusComp(a,ym);
             const baixado=(a.baixados||[]).includes(ym);
@@ -607,6 +615,7 @@ async function renderUnidade(uId){
   ${nav()}`;
 
   if(c) carregarDocs(c.id);
+  for(const a of antigos) carregarDocs(a.id, "docs-"+a.id);
 }
 window.renomearUnidade = async id => { const u=unidades.find(x=>x.id===id); const n=prompt("Nome da unidade:",u.nome); if(!n) return; await updateDoc(doc(db,"unidades",id),{nome:n.trim()}); };
 window.excluirUnidade = async id => {
@@ -920,11 +929,13 @@ window.confEncerrar = async cId => {
 };
 
 /* ---------- documentos (fotos comprimidas no Firestore) ---------- */
-async function carregarDocs(cId){
-  const box=$("#docs"); if(!box) return;
+window._docsCache = window._docsCache || [];
+async function carregarDocs(cId, containerId){
+  const box=$("#"+(containerId||"docs")); if(!box) return;
   const snap=await getDocs(query(collection(db,"documentos"),where("contratoId","==",cId)));
   const docsL=snap.docs.map(d=>({id:d.id,...d.data()}));
-  window._docsCache = docsL;
+  // mantém um cache acumulado por id, para verDocId achar de qualquer container
+  for(const d of docsL){ if(!window._docsCache.find(x=>x.id===d.id)) window._docsCache.push(d); }
   box.innerHTML = docsL.length ? docsL.map(d=>`
     <div style="text-align:center">
       <img class="dth" src="${d.base64}" onclick="verDocId('${d.id}')">
