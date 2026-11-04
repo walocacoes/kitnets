@@ -328,7 +328,7 @@ function renderHome(){
   const despLista = despesas.filter(d=>ymDe(vencDesp(d))===ym);
   const despMes = despLista.reduce((s,d)=>s+Number(d.valor),0);
   const despPagas = despLista.filter(d=>d.pagamento).reduce((s,d)=>s+Number(d.valor),0);
-  const ocupadas = new Set(ativosNoMes.map(c=>c.unidadeId)).size;
+  const ocupadas = new Set(contratos.filter(c=>c.ativo).map(c=>c.unidadeId)).size;
   const totalU = unidades.length;
   const ocup = totalU ? Math.round(100*ocupadas/totalU) : 0;
   const encerrOuAtivos = contratos.filter(c=>c.dataEntrada);
@@ -597,6 +597,10 @@ async function renderUnidade(uId){
           }).join("")}
           ${cobrancasDe(a.id).length?`<div style="margin-top:8px"><b class="muted">Cobranças avulsas</b>
             ${cobrancasDe(a.id).map(cob=>{const f=faltaCob(cob),pg=pagoCob(cob);return `<div class="compRow"><div><b>${TIPO_COB[cob.tipo]||cob.tipo}</b>${cob.descricao?` · ${esc(cob.descricao)}`:""}<div class="muted">${fmt(pg)} de ${fmt(cob.valor)}${f>0.005?` · falta ${fmt(f)}`:""}</div></div><div class="row">${stTag(statusCob(cob))}${f>0.005?`<button class="btn sm" onclick="pagarCob('${cob.id}')">＋ pagar</button>`:""}</div></div>`;}).join("")}</div>`:""}
+          <div class="row" style="margin-top:10px;flex-wrap:wrap">
+            ${a.motivoSaida&&a.motivoSaida.startsWith("Transferido")?`<button class="btn sm sec" onclick="reverterTransferencia('${a.id}')">↩ Reverter transferência</button>`:""}
+            <button class="btn sm danger" onclick="excluirContrato('${a.id}')">🗑 Excluir este registro</button>
+          </div>
         </div>
       </details>`;
     }).join("")}</div>`:""}
@@ -984,6 +988,43 @@ window.transferir = cId => {
     <label>Dia do vencimento</label><input id="f-dia" type="number" min="1" max="31" value="${c.diaVenc}">
     <div class="mAct"><button class="btn sec" onclick="closeModal()">Cancelar</button>
     <button class="btn" onclick="confTransferir('${cId}')">Transferir</button></div>`);
+};
+window.reverterTransferencia = async antigoId => {
+  // antigoId = contrato que foi encerrado por transferência. Encontra o contrato novo gerado a partir dele.
+  const antigo=contratos.find(x=>x.id===antigoId);
+  const novo=contratos.find(x=>x.contratoAnterior===antigoId);
+  if(!novo){ alert("Não encontrei o contrato de destino desta transferência. Talvez já tenha sido revertida."); return; }
+  const uNovo=unidades.find(u=>u.id===novo.unidadeId);
+  const uAntigo=unidades.find(u=>u.id===antigo.unidadeId);
+  // se a kitnet antiga já tiver outro inquilino ativo, não dá pra reativar
+  const outroAtivo=contratos.find(x=>x.id!==antigoId && x.unidadeId===antigo.unidadeId && x.ativo);
+  if(outroAtivo){ alert(`Não dá pra reverter: a ${uAntigo?.nome||"kitnet de origem"} já tem outro inquilino ativo (${outroAtivo.nome}).`); return; }
+  if(!confirm(`Reverter a transferência? ${novo.nome} volta para ${uAntigo?.nome||"a kitnet de origem"}, e o contrato criado em ${uNovo?.nome||"destino"} será removido. Os pagamentos voltam junto.`)) return;
+  // 1) traz pagamentos e cobranças do contrato novo de volta para o antigo
+  for(const p of pagamentos.filter(p=>p.contratoId===novo.id)) await updateDoc(doc(db,"pagamentos",p.id),{contratoId:antigoId});
+  for(const x of cobrancas.filter(x=>x.contratoId===novo.id)) await updateDoc(doc(db,"cobrancas",x.id),{contratoId:antigoId});
+  // 2) apaga documentos copiados para o contrato novo
+  try{ const snap=await getDocs(query(collection(db,"documentos"),where("contratoId","==",novo.id))); for(const d of snap.docs) await deleteDoc(doc(db,"documentos",d.id)); }catch(e){}
+  // 3) remove o contrato novo e reativa o antigo
+  await deleteDoc(doc(db,"contratos",novo.id));
+  await updateDoc(doc(db,"contratos",antigoId),{ativo:true,dataSaida:null,motivoSaida:null});
+  closeModal?.();
+  abrirUnidade(antigo.unidadeId);
+};
+window.excluirContrato = async cId => {
+  const c=contratos.find(x=>x.id===cId);
+  if(c.ativo){ alert("Este contrato está ativo. Encerre-o antes de excluir, ou use reverter transferência."); return; }
+  const pg=pagamentos.filter(p=>p.contratoId===cId);
+  const cob=cobrancas.filter(x=>x.contratoId===cId);
+  const totPg=pg.reduce((s,p)=>s+Number(p.valor),0);
+  const aviso=`Excluir DEFINITIVAMENTE o registro de ${c.nome} nesta kitnet?\n\nIsso apaga o contrato, ${pg.length} pagamento(s)${totPg>0?` (${fmt(totPg)})`:""}, ${cob.length} cobrança(s) e os documentos anexados a ele. Não dá pra desfazer.`;
+  if(!confirm(aviso)) return;
+  if(!confirm("Tem certeza mesmo? Esta ação é permanente.")) return;
+  for(const p of pg) await deleteDoc(doc(db,"pagamentos",p.id));
+  for(const x of cob) await deleteDoc(doc(db,"cobrancas",x.id));
+  try{ const snap=await getDocs(query(collection(db,"documentos"),where("contratoId","==",cId))); for(const d of snap.docs) await deleteDoc(doc(db,"documentos",d.id)); }catch(e){}
+  await deleteDoc(doc(db,"contratos",cId));
+  render();
 };
 window.puxarPagamentos = async cId => {
   const c=contratos.find(x=>x.id===cId);
@@ -1428,7 +1469,8 @@ function dadosRelatorio(ym){
     const avulsoMes=avulsasMes.reduce((s,cob)=>s+faltaCob(cob),0);
     const totalCobrar=falta+atrasadoAnt+avulsoMes;
     const b=porCasa[u.casaId];
-    b.previsto+=dev; b.recebido+=pg; if(venceu) b.atraso+=falta; b.ocup++;
+    b.previsto+=dev; b.recebido+=pg; if(venceu) b.atraso+=falta;
+    if(c.ativo && !b._unidadesOcupadas?.has?.(u.id)){ (b._unidadesOcupadas=b._unidadesOcupadas||new Set()).add(u.id); b.ocup++; }
     b.avulsoPago=(b.avulsoPago||0)+avulsoPago;
     b.recebAnterior=(b.recebAnterior||0)+recebAnterior;
     b.linhas.push({unidade:u.nome,inquilino:c.nome,dev,pg,falta,st,venc:vencComp(c,ym),diaVenc:c.diaVenc,atrasadoAnt,avulsoMes,avulsasMes:avulsasMes.map(x=>({tipo:x.tipo,descricao:x.descricao,valor:faltaCob(x)})),avulsoPago,avulsasPagasDet,recebAnterior,recebAnteriorDet,totalCobrar});
