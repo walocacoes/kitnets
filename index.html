@@ -831,39 +831,55 @@ window.removerAjuste = async (cId,idx) => {
   aj.splice(idx,1);
   await updateDoc(doc(db,"contratos",cId),{ajustes:aj});
 };
+// dias corridos entre duas datas, contando os dois extremos (28/10 a 05/11 = 9)
+function diasInclusivos(d1,d2){ return Math.abs(Math.round((new Date(d2)-new Date(d1))/86400000))+1; }
 window.mudarVenc = cId => {
   const c=contratos.find(x=>x.id===cId);
+  // último vencimento (dia atual no mês corrente) como referência
+  const ultimoVenc=`${ymAtual()}-${pad(Math.min(c.diaVenc,diasNoMes(ymAtual())))}`;
   openModal(`<h3>Mudar dia do vencimento</h3>
-    <p class="muted">Hoje vence dia <b>${c.diaVenc}</b>. Se o novo dia for depois, o inquilino ganha dias a mais no ciclo — o sistema calcula o pro-rata pra cobrar na transição. Se for antes, vira desconto.</p>
-    <label>Novo dia do vencimento</label><input id="f-dia" type="number" min="1" max="31" oninput="calcPro('${cId}')">
+    <p class="muted">Hoje vence dia <b>${c.diaVenc}</b>. O pro-rata conta os dias corridos entre o último vencimento e a nova data (incluindo os dois extremos), com a diária pelos dias reais do mês.</p>
+    <label>Último vencimento (referência)</label><input id="f-ref" type="date" value="${ultimoVenc}" onchange="calcPro('${cId}')">
+    <label>Nova data de vencimento</label><input id="f-novadata" type="date" value="${hoje()}" onchange="calcPro('${cId}')">
     <div class="card" id="pro-out" style="margin-top:12px;display:none"></div>
     <label class="row" style="margin-top:6px"><input type="checkbox" id="f-lanca" style="width:auto"> também cobrar/descontar o pro-rata deste mês (deixe desmarcado se não for cobrar nada)</label>
     <div class="mAct"><button class="btn sec" onclick="closeModal()">Cancelar</button>
     <button class="btn" onclick="salvarVenc('${cId}')">Confirmar</button></div>`);
+  calcPro(cId);
 };
+// calcula o ajuste do pro-rata a partir das duas datas
+function proRataVenc(c){
+  const ref=$("#f-ref").value, nova=$("#f-novadata").value;
+  if(!ref||!nova) return null;
+  const novoDia=+nova.split("-")[2];
+  const val=valorVigente(c,ymAtual());
+  const diasMes=diasNoMes(ymDe(nova));          // dias reais do mês (30 ou 31)
+  const diaria=val/diasMes;
+  if(nova===ref) return {dias:0,diaria,ajuste:0,novoDia,diasMes};
+  const dias=diasInclusivos(ref,nova);
+  const sinal=nova>ref?1:-1;                      // depois = cobra, antes = desconta
+  const ajuste=+(sinal*dias*diaria).toFixed(2);
+  return {dias,diaria,ajuste,novoDia,diasMes,sinal};
+}
 window.calcPro = cId => {
   const c=contratos.find(x=>x.id===cId);
-  const novo=+$("#f-dia").value; const out=$("#pro-out");
-  if(!novo||novo<1||novo>31){ out.style.display="none"; return; }
-  const val=valorVigente(c,ymAtual());
-  const diff=novo-c.diaVenc, diaria=val/30, ajuste=+(diff*diaria).toFixed(2);
+  const out=$("#pro-out"); if(!out) return;
+  const r=proRataVenc(c);
+  if(!r){ out.style.display="none"; return; }
   out.style.display="block";
-  out.innerHTML = diff===0 ? `<p class="muted">Mesmo dia, nada muda.</p>` :
-    `<p><b>${Math.abs(diff)} dia(s)</b> de diferença × diária de ${fmt(diaria)} =
-     <b style="color:${diff>0?'var(--amber)':'var(--green)'}">${diff>0?"cobrança extra":"desconto"} de ${fmt(Math.abs(ajuste))}</b></p>`;
+  out.innerHTML = r.dias===0 ? `<p class="muted">Mesma data, nada a cobrar.</p>` :
+    `<p><b>${r.dias} dia(s)</b> × diária de ${fmt(r.diaria)} <span class="muted">(valor ÷ ${r.diasMes} dias do mês)</span> =
+     <b style="color:${r.sinal>0?'var(--amber)':'var(--green)'}">${r.sinal>0?"cobrança extra":"desconto"} de ${fmt(Math.abs(r.ajuste))}</b></p>`;
 };
 window.salvarVenc = async cId => {
   const c=contratos.find(x=>x.id===cId);
-  const novo=+$("#f-dia").value;
-  if(!novo||novo<1||novo>31){ alert("Informe o novo dia (1 a 31)."); return; }
-  const upd={diaVenc:novo};
-  const diff=novo-c.diaVenc;
-  if(diff!==0 && $("#f-lanca").checked){
-    const val=valorVigente(c,ymAtual());
-    const ajuste=+((val/30)*diff).toFixed(2);
-    const txt=diff>0?`cobrança extra de ${fmt(Math.abs(ajuste))}`:`desconto de ${fmt(Math.abs(ajuste))}`;
-    if(!confirm(`Você marcou para lançar o pro-rata: ${txt} no mês atual. Confirma? (Se só quer mudar o dia sem cobrar nada, cancele e desmarque a opção.)`)) return;
-    upd.ajustes=[...(c.ajustes||[]),{comp:ymAtual(),valor:ajuste,motivo:`Pro-rata: vencimento dia ${c.diaVenc} → dia ${novo}`}];
+  const r=proRataVenc(c);
+  if(!r){ alert("Informe o último vencimento e a nova data."); return; }
+  const upd={diaVenc:r.novoDia};
+  if(r.dias>0 && $("#f-lanca").checked){
+    const txt=r.sinal>0?`cobrança extra de ${fmt(Math.abs(r.ajuste))}`:`desconto de ${fmt(Math.abs(r.ajuste))}`;
+    if(!confirm(`Você marcou para lançar o pro-rata: ${r.dias} dias = ${txt} no mês atual. Confirma? (Se só quer mudar o dia sem cobrar nada, cancele e desmarque a opção.)`)) return;
+    upd.ajustes=[...(c.ajustes||[]),{comp:ymAtual(),valor:r.ajuste,motivo:`Pro-rata: ${r.dias} dias (venc. dia ${c.diaVenc} → dia ${r.novoDia})`}];
   }
   await updateDoc(doc(db,"contratos",cId),upd);
   closeModal();
