@@ -500,7 +500,8 @@ async function renderUnidade(uId){
         <span class="tag t-aberto" style="font-size:12.5px">Vence dia ${c.diaVenc}</span>
       </div>
       ${vals.length>1?`<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">Histórico de valores</summary>
-        ${vals.map(v=>`<div class="muted" style="padding:3px 0">• ${fmt(v.valor)} desde ${dBr(v.desde)}</div>`).join("")}</details>`:""}
+        ${vals.map(v=>{const idx=(c.valores||[]).indexOf(v);return `<div class="muted spread" style="padding:3px 0"><span>• ${fmt(v.valor)} desde ${dBr(v.desde)}</span><button class="iconb" onclick="removerValor('${c.id}',${idx})">🗑</button></div>`;}).join("")}
+        <div class="hint" style="margin-top:4px">O valor atual (mais recente) é o que vale. Remova aqui um reajuste lançado errado.</div></details>`:""}
       <div class="row" style="margin-top:12px;flex-wrap:wrap">
         <button class="btn sm sec" onclick="reajustar('${c.id}')">Reajustar valor</button>
         <button class="btn sm sec" onclick="mudarVenc('${c.id}')">Mudar vencimento</button>
@@ -823,6 +824,15 @@ window.salvarReaj = async cId => {
   closeModal();
 };
 
+window.removerValor = async (cId,idx) => {
+  const c=contratos.find(x=>x.id===cId);
+  const vals=[...(c.valores||[])];
+  if(vals.length<=1){ alert("Não dá pra remover o único valor do contrato."); return; }
+  if(idx<0||idx>=vals.length) return;
+  if(!confirm(`Remover o valor ${fmt(vals[idx].valor)} (desde ${dBr(vals[idx].desde)}) do histórico? O aluguel passa a usar os valores que sobrarem.`)) return;
+  vals.splice(idx,1);
+  await updateDoc(doc(db,"contratos",cId),{valores:vals});
+};
 window.removerAjuste = async (cId,idx) => {
   const c=contratos.find(x=>x.id===cId);
   const aj=[...(c.ajustes||[])];
