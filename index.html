@@ -845,8 +845,14 @@ window.removerAjuste = async (cId,idx) => {
 function diasInclusivos(d1,d2){ return Math.abs(Math.round((new Date(d2)-new Date(d1))/86400000))+1; }
 window.mudarVenc = cId => {
   const c=contratos.find(x=>x.id===cId);
-  // último vencimento (dia atual no mês corrente) como referência
-  const ultimoVenc=`${ymAtual()}-${pad(Math.min(c.diaVenc,diasNoMes(ymAtual())))}`;
+  // último vencimento = ocorrência do dia de venc. mais recente que seja <= hoje
+  // (se hoje é 05/11 e vence dia 28, o último venc. foi 28/10, não 28/11)
+  let ymRef=ymAtual();
+  let ref=`${ymRef}-${pad(Math.min(c.diaVenc,diasNoMes(ymRef)))}`;
+  if(ref>hoje()){ ymRef=ymAdd(ymRef,-1); ref=`${ymRef}-${pad(Math.min(c.diaVenc,diasNoMes(ymRef)))}`; }
+  // nunca antes da entrada do inquilino
+  if(ref<c.dataEntrada) ref=c.dataEntrada;
+  const ultimoVenc=ref;
   openModal(`<h3>Mudar dia do vencimento</h3>
     <p class="muted">Hoje vence dia <b>${c.diaVenc}</b>. O pro-rata conta os dias corridos entre o último vencimento e a nova data (incluindo os dois extremos), com a diária pelos dias reais do mês.</p>
     <label>Último vencimento (referência)</label><input id="f-ref" type="date" value="${ultimoVenc}" onchange="calcPro('${cId}')">
@@ -886,10 +892,30 @@ window.salvarVenc = async cId => {
   const r=proRataVenc(c);
   if(!r){ alert("Informe o último vencimento e a nova data."); return; }
   const upd={diaVenc:r.novoDia};
+  const nova=$("#f-novadata").value;
+  const compPonte=ymDe(nova); // mês onde cai a nova data de vencimento
   if(r.dias>0 && $("#f-lanca").checked){
-    const txt=r.sinal>0?`cobrança extra de ${fmt(Math.abs(r.ajuste))}`:`desconto de ${fmt(Math.abs(r.ajuste))}`;
-    if(!confirm(`Você marcou para lançar o pro-rata: ${r.dias} dias = ${txt} no mês atual. Confirma? (Se só quer mudar o dia sem cobrar nada, cancele e desmarque a opção.)`)) return;
-    upd.ajustes=[...(c.ajustes||[]),{comp:ymAtual(),valor:r.ajuste,motivo:`Pro-rata: ${r.dias} dias (venc. dia ${c.diaVenc} → dia ${r.novoDia})`}];
+    if(r.sinal>0){
+      // mudança PRA FRENTE: a ponte cobre o mês da transição.
+      // novembro deixa de cobrar aluguel cheio (vira a ponte); próximo aluguel cheio cai no mês seguinte.
+      const txt=`${r.dias} dias = cobrança de ${fmt(Math.abs(r.ajuste))}`;
+      if(!confirm(`Pró-rata ${txt}. O aluguel de ${ymLabel(compPonte)} será coberto por essa ponte (não cobra o mês cheio), e o próximo aluguel cheio cai em ${ymLabel(ymAdd(compPonte,1))}. Confirma?`)) return;
+      // baixa o aluguel do mês da ponte (não cobra o cheio)
+      upd.baixados=[...(c.baixados||[])];
+      if(!upd.baixados.includes(compPonte)) upd.baixados.push(compPonte);
+      await updateDoc(doc(db,"contratos",cId),upd);
+      // lança a ponte como cobrança avulsa separada
+      await addDoc(collection(db,"cobrancas"),{
+        contratoId:cId, tipo:"aluguel",
+        descricao:`Pró-rata mudança de vencimento (${r.dias} dias, dia ${c.diaVenc} → dia ${r.novoDia})`,
+        valor:Math.abs(r.ajuste), vencimento:nova, pagamentos:[]
+      });
+      closeModal(); return;
+    } else {
+      // mudança PRA TRÁS: vira desconto no mês atual (ajuste negativo)
+      if(!confirm(`Pró-rata: ${r.dias} dias = desconto de ${fmt(Math.abs(r.ajuste))} em ${ymLabel(compPonte)}. Confirma?`)) return;
+      upd.ajustes=[...(c.ajustes||[]),{comp:compPonte,valor:r.ajuste,motivo:`Pro-rata: ${r.dias} dias (venc. dia ${c.diaVenc} → dia ${r.novoDia})`}];
+    }
   }
   await updateDoc(doc(db,"contratos",cId),upd);
   closeModal();
