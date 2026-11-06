@@ -197,12 +197,14 @@ function valorVigente(c, ym){
 }
 function devidoComp(c, ym){
   if((c.baixados||[]).includes(ym)) return 0; // mês baixado sem cobrança
+  if((c.cobertos||[]).includes(ym)) return 0; // mês coberto pela ponte de vencimento (já pago no ciclo)
   const aj = (c.ajustes||[]).filter(a=>a.comp===ym).reduce((s,a)=>s+Number(a.valor),0);
   return valorVigente(c,ym) + aj;
 }
 const pagoComp = (cId, ym) => pagamentos.filter(p=>p.contratoId===cId && p.comp===ym).reduce((s,p)=>s+Number(p.valor),0);
 function vencComp(c, ym){ return `${ym}-${pad(Math.min(c.diaVenc, diasNoMes(ym)))}`; }
 function statusComp(c, ym){
+  if((c.cobertos||[]).includes(ym)) return "coberto";
   if((c.baixados||[]).includes(ym)) return "baixado";
   const dev=devidoComp(c,ym), pg=pagoComp(c.id,ym);
   if(dev<=0) return "pago";
@@ -211,7 +213,9 @@ function statusComp(c, ym){
   if(pg>0) return venceu ? "atrasado" : "parcial";
   return venceu ? "atrasado" : "aberto";
 }
-const stTag = s => ({pago:'<span class="tag t-pago">Pago</span>',parcial:'<span class="tag t-parcial">Parcial</span>',aberto:'<span class="tag t-aberto">Em aberto</span>',atrasado:'<span class="tag t-atrasado">Atrasado</span>',baixado:'<span class="tag t-vaga">Baixado</span>'}[s]);
+const stTag = s => ({pago:'<span class="tag t-pago">Pago</span>',parcial:'<span class="tag t-parcial">Parcial</span>',aberto:'<span class="tag t-aberto">Em aberto</span>',atrasado:'<span class="tag t-atrasado">Atrasado</span>',baixado:'<span class="tag t-vaga">Baixado</span>',coberto:'<span class="tag t-pago">Pago</span>'}[s]);
+// rótulo completo do status coberto, usado na ficha do inquilino (onde há espaço)
+const stTagFicha = s => s==="coberto" ? '<span class="tag t-pago">Pago (reajuste de vencimento)</span>' : stTag(s);
 
 /* despesas: vencimento/pagamento */
 const vencDesp = d => d.vencimento || d.data || hoje();
@@ -533,14 +537,16 @@ async function renderUnidade(uId){
         const pgs = pagamentos.filter(p=>p.contratoId===c.id&&p.comp===ym).sort((a,b)=>a.data.localeCompare(b.data));
         const aj = (c.ajustes||[]).filter(a=>a.comp===ym);
         const baixado = (c.baixados||[]).includes(ym);
+        const coberto = (c.cobertos||[]).includes(ym);
         return `<div class="compRow" style="flex-direction:column;align-items:stretch">
           <div class="spread">
-            <div><b>${ymLabel(ym)}</b><div class="muted">venc. ${dBr(vencComp(c,ym))} · ${baixado?"baixado sem cobrança":`${fmt(pg)} de ${fmt(dev)}${dev-pg>0.005?` · falta <b>${fmt(dev-pg)}</b>`:""}`}</div></div>
-            <div class="row">${stTag(st)}${baixado?"":`<button class="btn sm" onclick="regPag('${c.id}','${ym}')">＋ pagar</button>`}</div>
+            <div><b>${ymLabel(ym)}</b><div class="muted">venc. ${dBr(vencComp(c,ym))} · ${coberto?"coberto pelo reajuste de vencimento":baixado?"baixado sem cobrança":`${fmt(pg)} de ${fmt(dev)}${dev-pg>0.005?` · falta <b>${fmt(dev-pg)}</b>`:""}`}</div></div>
+            <div class="row">${stTagFicha(st)}${(baixado||coberto)?"":`<button class="btn sm" onclick="regPag('${c.id}','${ym}')">＋ pagar</button>`}</div>
           </div>
           ${aj.map(a=>{const idx=(c.ajustes||[]).indexOf(a);return `<div class="muted spread" style="margin-top:4px"><span>⚙️ Ajuste ${fmt(a.valor)} — ${esc(a.motivo||"")}</span><button class="iconb" onclick="removerAjuste('${c.id}',${idx})">🗑</button></div>`;}).join("")}
           ${pgs.map(p=>`<div class="muted spread" style="margin-top:4px"><span>💵 ${dBr(p.data)} — ${fmt(p.valor)}${p.obs?` · ${esc(p.obs)}`:""}</span><span class="row"><button class="iconb" onclick="editPag('${p.id}')">✎</button><button class="iconb" onclick="delPag('${p.id}')">🗑</button></span></div>`).join("")}
-          ${dev-pg>0.005 && !baixado ? `<button class="btn sm sec" style="margin-top:6px;align-self:flex-start" onclick="baixarComp('${c.id}','${ym}')">Baixar sem cobrar</button>` : ""}
+          ${coberto ? `<button class="btn sm sec" style="margin-top:6px;align-self:flex-start" onclick="reabrirComp('${c.id}','${ym}')">Desfazer cobertura</button>` : ""}
+          ${dev-pg>0.005 && !baixado && !coberto ? `<button class="btn sm sec" style="margin-top:6px;align-self:flex-start" onclick="baixarComp('${c.id}','${ym}')">Baixar sem cobrar</button>` : ""}
           ${baixado ? `<button class="btn sm sec" style="margin-top:6px;align-self:flex-start" onclick="reabrirComp('${c.id}','${ym}')">Reabrir cobrança</button>` : ""}
         </div>`;
       }).join("")}
@@ -714,7 +720,7 @@ window.baixarComp = async (cId,ym) => {
 };
 window.reabrirComp = async (cId,ym) => {
   const c=contratos.find(x=>x.id===cId);
-  await updateDoc(doc(db,"contratos",cId),{baixados:(c.baixados||[]).filter(x=>x!==ym)});
+  await updateDoc(doc(db,"contratos",cId),{baixados:(c.baixados||[]).filter(x=>x!==ym),cobertos:(c.cobertos||[]).filter(x=>x!==ym)});
 };
 window.encerrarFantasma = cId => {
   const c=contratos.find(x=>x.id===cId);
@@ -900,9 +906,9 @@ window.salvarVenc = async cId => {
       // novembro deixa de cobrar aluguel cheio (vira a ponte); próximo aluguel cheio cai no mês seguinte.
       const txt=`${r.dias} dias = cobrança de ${fmt(Math.abs(r.ajuste))}`;
       if(!confirm(`Pró-rata ${txt}. O aluguel de ${ymLabel(compPonte)} será coberto por essa ponte (não cobra o mês cheio), e o próximo aluguel cheio cai em ${ymLabel(ymAdd(compPonte,1))}. Confirma?`)) return;
-      // baixa o aluguel do mês da ponte (não cobra o cheio)
-      upd.baixados=[...(c.baixados||[])];
-      if(!upd.baixados.includes(compPonte)) upd.baixados.push(compPonte);
+      // marca o mês da ponte como COBERTO (não cobra o cheio, mas está em dia — não é "baixado")
+      upd.cobertos=[...(c.cobertos||[])];
+      if(!upd.cobertos.includes(compPonte)) upd.cobertos.push(compPonte);
       await updateDoc(doc(db,"contratos",cId),upd);
       // lança a ponte como cobrança avulsa separada
       await addDoc(collection(db,"cobrancas"),{
@@ -1433,7 +1439,7 @@ function htmlDevedores(){
   const devs=devedoresAgrupados();
   const total=devs.reduce((s,d)=>s+d.falta,0);
   const hj=new Date().toLocaleDateString("pt-BR");
-  const stTxt={pago:"Pago",parcial:"Parcial",aberto:"Em aberto",atrasado:"Atrasado",baixado:"Baixado"};
+  const stTxt={pago:"Pago",parcial:"Parcial",aberto:"Em aberto",atrasado:"Atrasado",baixado:"Baixado",coberto:"Pago (reajuste venc.)"};
   return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Relatório de Devedores</title>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
@@ -1589,7 +1595,7 @@ function htmlRelatorio(ym){
   const r=dadosRelatorio(ym);
   const totU=unidades.length, ocupadas=r.porCasa.reduce((s,b)=>s+b.ocup,0);
   const hj=new Date().toLocaleDateString("pt-BR");
-  const stTxt={pago:"Pago",parcial:"Parcial",aberto:"Em aberto",atrasado:"Atrasado",baixado:"Baixado"};
+  const stTxt={pago:"Pago",parcial:"Parcial",aberto:"Em aberto",atrasado:"Atrasado",baixado:"Baixado",coberto:"Pago (reajuste venc.)"};
   return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Relatório ${ymLabel(ym)}</title>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
@@ -1608,7 +1614,7 @@ function htmlRelatorio(ym){
     .selo{display:inline-block;padding:3px 10px;border-radius:99px;font-size:11px;font-weight:700;white-space:nowrap}
     .s-pago{background:#E2EFE6;color:#2E6B46} .s-parcial{background:#F7EDDA;color:#A26714}
     .s-aberto{background:#EEEDE7;color:#7C8074} .s-atrasado{background:#F9E6E1;color:#B23E2C}
-    .s-baixado{background:#EEEDE7;color:#7C8074}
+    .s-baixado{background:#EEEDE7;color:#7C8074} .s-coberto{background:#E2EFE6;color:#2E6B46}
     tbody tr:nth-child(4n+1){background:#FAFAF7}
     @media print{body{padding:12px}.noprint{display:none}}
   </style></head><body>
